@@ -1,58 +1,59 @@
 # Benchmarks — honest status
 
 Run with `scripts/bench.sh`. Numbers below are from a local dev machine (Apple Silicon, macOS,
-`redis-benchmark`, 200k–1M requests, 50 clients). **macOS is the worst case for us** — it has no
-io_uring and our portable fallback is plain blocking sockets. Treat these as directional, not
-final.
+`redis-benchmark`, 1M requests, 50 clients). **macOS is the worst case for us** — it has no
+io_uring, so our portable fallback is plain blocking sockets. Treat these as directional.
 
-## Current results (v0.0.1)
+## Results after phase-5 hot-path optimization (v0.0.1)
+
+Optimizations applied: **mimalloc** global allocator, **zero-copy request parsing** (arguments
+read as `(offset,len)` ranges into the read buffer — no per-arg allocation), and a **borrowed
+`GET` path** that encodes the stored value straight into the socket buffer (no value copy).
 
 | Workload | inmem | Redis 7.x | Ratio |
 |---|--:|--:|--:|
-| SET, no pipeline (`-P 1`) | ~186k rps | ~220k rps | 0.85× |
-| GET, no pipeline (`-P 1`) | ~192k rps | ~236k rps | 0.81× |
-| SET, `-P 16` | ~1.02M rps | ~2.03M rps | 0.50× |
-| GET, `-P 16` | ~1.77M rps | ~2.68M rps | 0.66× |
-| SET, `-P 64` | ~1.19M rps | ~2.80M rps | 0.42× |
-| GET, `-P 64` | ~2.17M rps | ~4.00M rps | 0.54× |
+| SET, no pipeline (`-P 1`)  | ~191k rps  | ~234k rps  | 0.81× |
+| GET, no pipeline (`-P 1`)  | ~193k rps  | ~221k rps  | 0.87× |
+| SET, `-P 16`               | ~2.00M rps | ~2.04M rps | 0.98× (parity) |
+| GET, `-P 16`               | ~2.52M rps | ~2.68M rps | 0.94× |
+| **SET, `-P 64`**           | **~3.22M rps** | ~2.61M rps | **1.23× (we win)** |
+| **GET, `-P 64`**           | **~4.95M rps** | ~4.26M rps | **1.16× (we win)** |
 
-**We are NOT yet faster than Redis.** This is the truthful baseline for a correct, complete v1.
-The architecture is the right one (research-backed); the *implementation* hasn't been optimized
-yet. Beating Redis is the explicit goal of the next phase, and the gap is fully explained by
-known, fixable hot-path costs — not by the design.
+**We now beat Redis in the throughput-bound, high-pipelining regime** (`-P 64`): +23% on SET,
++16% on GET. This is the regime where multi-core parallelism dominates, and it validates the
+core architecture — Redis is fundamentally single-threaded per shard, so once per-op overhead is
+low enough, our sharded multi-threaded store scales past it.
 
-## Why we're behind right now (root causes, each fixable)
+Redis still wins the **latency-bound** `-P 1` case (one request per round-trip), because our
+thread-per-connection model has higher per-op latency than Redis's single epoll loop. That gap is
+exactly what the next item (io_uring thread-per-core) targets.
 
-1. **Thread-per-connection + blocking sockets.** With 50 connections we spawn 50 OS threads that
-   contend for cores and do a `read`/`write` syscall per batch. Redis's single epoll loop has no
-   such coordination. → Fix: Linux **io_uring thread-per-core** runtime (ADR-001 D3/D4) with a
-   fixed worker = core count, each owning its connections.
-2. **Per-request allocation.** Every command allocates a `Vec<Vec<u8>>` for argv, and `GET`
-   copies the value twice (`Box<[u8]>` clone → `Vec` for the reply). → Fix: zero-copy parse
-   borrowing from the read buffer; reply that borrows the stored bytes while the shard lock is
-   held; reuse argv buffers per connection.
-3. **Per-op shard mutex.** Lock/unlock on every operation. → Fix: the thread-per-core endgame
-   removes the lock entirely (single owner per shard); keys route to their owning core.
-4. **General-purpose allocator.** → Fix: `mimalloc`/`jemalloc` global allocator, then a slab
-   allocator for entries (the dashtable integration, ADR-001 D5/D6).
-5. **No SIMD probing yet.** The index is scalar linear probing. → Fix: SwissTable control-byte
-   groups, then dashtable segments.
+### Before vs after phase 5 (GET)
 
-## Optimization roadmap to actually beat Redis (phase 5)
+| | `-P 1` | `-P 16` | `-P 64` |
+|---|--:|--:|--:|
+| before | ~192k | ~1.77M | ~2.17M |
+| after  | ~193k | ~2.52M | ~4.95M |
 
-In rough order of expected leverage:
+The high-pipelining gains (2.3× at `-P 64`) come from eliminating per-request allocation and the
+`GET` value copy; the `-P 1` path is unchanged because it is latency- not allocation-bound.
 
-1. **io_uring thread-per-core runtime** (`glommio`/`monoio`) on Linux — the single biggest lever;
-   removes thread-contention and most syscall overhead, and unlocks true multi-core scaling that
-   Redis's single thread cannot match.
-2. **Zero-copy request path** — parse argv as slices into the socket buffer; pooled buffers; no
-   per-command heap allocation.
-3. **Borrowed replies** — write `GET` values straight from the shard into the socket buffer.
-4. **Global allocator swap** (mimalloc) + **slab/arena** for entries.
-5. **SwissTable SIMD index**, then **dashtable segments** for memory + spike-free resize.
-6. Re-benchmark on Linux with correct tail-latency methodology (coordinated-omission-aware, e.g.
-   `memtier_benchmark --hdr-histogram` or `redis-benchmark` percentiles), reporting p50/p99/p99.9.
+## Remaining roadmap to win across the board
 
-The multi-core ceiling is where we win: Redis is fundamentally single-threaded per shard, so once
-the thread-per-core path and zero-copy are in, aggregate throughput should scale past it on any
-multi-core box. That is the next milestone.
+In leverage order (the `-P 1` / tail-latency gap is the target):
+
+1. **io_uring thread-per-core runtime** (`glommio`/`monoio`) on Linux — removes thread-contention
+   and most syscall overhead; the single biggest lever for the latency-bound case. Linux-only,
+   so it can't be validated on this macOS dev box — needs a Linux benchmark run.
+2. **Single-owner shards** under thread-per-core — drop the per-op shard `Mutex` entirely (keys
+   route to their owning core).
+3. **Pooled argv / reply buffers** — reuse the small per-command `Vec<&[u8]>` allocation.
+4. **SwissTable SIMD index**, then **dashtable segments** for memory + spike-free resize.
+5. Re-benchmark on Linux with coordinated-omission-aware tooling (`memtier_benchmark
+   --hdr-histogram`), reporting p50/p99/p99.9.
+
+## Reproduce
+
+```bash
+scripts/bench.sh 1000000 50   # requests, clients
+```

@@ -5,6 +5,11 @@
 use inmem_server::config::{Config, HELP};
 use inmem_server::server::Server;
 
+/// A fast multi-threaded allocator. The cache is allocation-heavy (every SET stores boxed
+/// key/value bytes); mimalloc cuts both latency and fragmentation versus the system allocator.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let cfg = match Config::from_args(std::env::args().skip(1)) {
         Ok(c) => c,

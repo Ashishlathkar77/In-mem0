@@ -9,4 +9,7 @@
 
 mod resp;
 
-pub use resp::{parse_command, ProtocolError, Reply};
+pub use resp::{
+    parse_command, parse_command_ranges, write_bulk, write_error, write_int, write_null,
+    write_simple, Command, ProtocolError, Reply,
+};

@@ -167,6 +167,21 @@ impl Store {
         s.map.get(key).map(|e| e.value.clone())
     }
 
+    /// Read a value **without copying it**: the closure runs while the shard lock is held and
+    /// receives a borrow of the stored bytes (or `None`). The hot `GET` path uses this to encode
+    /// the reply straight into the socket buffer, avoiding the value clone that [`Store::get`] does.
+    #[inline]
+    pub fn read<R>(&self, key: &[u8], f: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        let now = now_ms();
+        let mut s = self.shard(key);
+        if !s.live(key, now) {
+            return f(None);
+        }
+        s.pol.touch(key);
+        let v = s.map.get(key).map(|e| e.value.as_ref());
+        f(v)
+    }
+
     /// SET with options. Returns true if the value was written.
     pub fn set(&self, key: &[u8], value: &[u8], opts: SetOptions) -> bool {
         let now = now_ms();

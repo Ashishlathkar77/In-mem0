@@ -129,6 +129,141 @@ fn parse_inline_command(buf: &[u8]) -> Result<Option<Command>, ProtocolError> {
     Ok(Some((argv, consumed)))
 }
 
+/// Zero-copy command parse: instead of allocating an owned argument vector, fill `argv` with
+/// `(offset, len)` ranges into `buf`. This lets the hot path read arguments as borrowed slices
+/// (`&buf[offset..offset+len]`) with no per-argument allocation or copy.
+///
+/// `argv` is cleared first. Returns `Ok(Some(consumed))`, `Ok(None)` (incomplete), or `Err`.
+pub fn parse_command_ranges(
+    buf: &[u8],
+    argv: &mut Vec<(usize, usize)>,
+) -> Result<Option<usize>, ProtocolError> {
+    argv.clear();
+    if buf.is_empty() {
+        return Ok(None);
+    }
+    if buf[0] == b'*' {
+        let Some((line, mut pos)) = read_line(buf, 1) else {
+            return Ok(None);
+        };
+        let n = parse_int(line)?;
+        if n < 0 {
+            return Ok(Some(pos));
+        }
+        if n > MAX_ARRAY_LEN {
+            return Err(ProtocolError::TooLarge);
+        }
+        argv.reserve(n as usize);
+        for _ in 0..n {
+            if pos >= buf.len() {
+                return Ok(None);
+            }
+            if buf[pos] != b'$' {
+                return Err(ProtocolError::Malformed("expected bulk string in command"));
+            }
+            let Some((len_line, after_len)) = read_line(buf, pos + 1) else {
+                return Ok(None);
+            };
+            let len = parse_int(len_line)?;
+            if len < 0 {
+                return Err(ProtocolError::Malformed("null bulk in command"));
+            }
+            if len > MAX_BULK_LEN {
+                return Err(ProtocolError::TooLarge);
+            }
+            let len = len as usize;
+            let data_end = after_len + len;
+            if data_end + 2 > buf.len() {
+                return Ok(None);
+            }
+            if &buf[data_end..data_end + 2] != b"\r\n" {
+                return Err(ProtocolError::Malformed("bulk not CRLF-terminated"));
+            }
+            argv.push((after_len, len));
+            pos = data_end + 2;
+        }
+        Ok(Some(pos))
+    } else {
+        let Some((line, consumed)) = read_line(buf, 0) else {
+            if buf.len() > 64 * 1024 {
+                return Err(ProtocolError::TooLarge);
+            }
+            return Ok(None);
+        };
+        // Inline form: record offsets of whitespace-delimited tokens.
+        let mut i = 0;
+        while i < line.len() {
+            while i < line.len() && line[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let start = i;
+            while i < line.len() && !line[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i > start {
+                argv.push((start, i - start));
+            }
+        }
+        Ok(Some(consumed))
+    }
+}
+
+/// Write a bulk string reply directly into `out` (no intermediate allocation).
+pub fn write_bulk(out: &mut Vec<u8>, data: &[u8]) {
+    out.push(b'$');
+    write_uint(out, data.len() as u64);
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\r\n");
+}
+
+/// Write a null (RESP3 `_` / RESP2 null bulk) directly into `out`.
+pub fn write_null(out: &mut Vec<u8>, resp3: bool) {
+    out.extend_from_slice(if resp3 { b"_\r\n" } else { b"$-1\r\n" });
+}
+
+/// Write a simple-string reply (`+s\r\n`) directly into `out`.
+pub fn write_simple(out: &mut Vec<u8>, s: &str) {
+    out.push(b'+');
+    out.extend_from_slice(s.as_bytes());
+    out.extend_from_slice(b"\r\n");
+}
+
+/// Write an error reply (`-msg\r\n`) directly into `out`.
+pub fn write_error(out: &mut Vec<u8>, msg: &str) {
+    out.push(b'-');
+    out.extend_from_slice(msg.as_bytes());
+    out.extend_from_slice(b"\r\n");
+}
+
+/// Write an integer reply (`:n\r\n`) directly into `out`.
+pub fn write_int(out: &mut Vec<u8>, n: i64) {
+    out.push(b':');
+    if n < 0 {
+        out.push(b'-');
+        write_uint(out, n.unsigned_abs());
+    } else {
+        write_uint(out, n as u64);
+    }
+    out.extend_from_slice(b"\r\n");
+}
+
+/// Append a u64 in decimal without allocating (writes into a stack buffer first).
+fn write_uint(out: &mut Vec<u8>, mut v: u64) {
+    if v == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut tmp = [0u8; 20];
+    let mut i = tmp.len();
+    while v > 0 {
+        i -= 1;
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    out.extend_from_slice(&tmp[i..]);
+}
+
 /// A server reply. Encodes to RESP2 by default; RESP3 differs only for nulls, booleans, doubles,
 /// maps, and push frames (selected via `resp3` in [`Reply::encode`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -316,6 +451,44 @@ mod tests {
         assert_eq!(Reply::Null.to_bytes(true), b"_\r\n");
         assert_eq!(Reply::Bool(true).to_bytes(false), b":1\r\n");
         assert_eq!(Reply::Bool(true).to_bytes(true), b"#t\r\n");
+    }
+
+    #[test]
+    fn ranges_parse_matches_owned() {
+        let buf = b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n";
+        let mut ranges = Vec::new();
+        let consumed = parse_command_ranges(buf, &mut ranges).unwrap().unwrap();
+        assert_eq!(consumed, buf.len());
+        let args: Vec<&[u8]> = ranges.iter().map(|&(o, l)| &buf[o..o + l]).collect();
+        assert_eq!(args, vec![&b"SET"[..], &b"foo"[..], &b"bar"[..]]);
+    }
+
+    #[test]
+    fn ranges_parse_inline_and_incomplete() {
+        let mut ranges = Vec::new();
+        assert!(
+            parse_command_ranges(b"*2\r\n$3\r\nGET\r\n$3\r\nfo", &mut ranges)
+                .unwrap()
+                .is_none()
+        );
+        let buf = b"set k v\r\n";
+        let consumed = parse_command_ranges(buf, &mut ranges).unwrap().unwrap();
+        assert_eq!(consumed, buf.len());
+        let args: Vec<&[u8]> = ranges.iter().map(|&(o, l)| &buf[o..o + l]).collect();
+        assert_eq!(args, vec![&b"set"[..], &b"k"[..], &b"v"[..]]);
+    }
+
+    #[test]
+    fn direct_writers() {
+        let mut o = Vec::new();
+        write_bulk(&mut o, b"hi");
+        assert_eq!(o, b"$2\r\nhi\r\n");
+        o.clear();
+        write_int(&mut o, -42);
+        assert_eq!(o, b":-42\r\n");
+        o.clear();
+        write_null(&mut o, true);
+        assert_eq!(o, b"_\r\n");
     }
 
     #[test]

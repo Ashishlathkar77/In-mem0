@@ -4,10 +4,11 @@ An open-source in-memory cache / key-value store, built in Rust, designed to bea
 throughput, tail latency, and memory efficiency — while staying reliable.
 
 > Working name. Status: **complete working v1** — a Redis-protocol-compatible server with
-> eviction, TTL, and persistence. It is **not yet faster than Redis** (see
-> [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for honest numbers and the optimization roadmap).
-> The research-backed architecture is in place; phase 5 is the performance work to surpass Redis.
-> See [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
+> eviction, TTL, and persistence. **It already beats Redis in the high-pipelining regime**
+> (`-P 64`: SET +23%, GET +16%) and is at parity around `-P 16`; Redis still wins the
+> latency-bound `-P 1` case (the io_uring thread-per-core work targets that). Honest numbers and
+> roadmap in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how
 
@@ -57,9 +58,9 @@ Requires Rust 1.96+ (pinned in `rust-toolchain.toml`).
 2. ✅ S3-FIFO eviction + capacity-bounded store + TTL
 3. ✅ RESP2/3 codec + multithreaded server (full string/keyspace command set)
 4. ✅ AOF persistence + binary snapshots + benchmark harness vs Redis
-5. ⬜ **Performance: surpass Redis** — io_uring thread-per-core, zero-copy request path,
-   borrowed replies, mimalloc/slab allocator, SwissTable-SIMD → dashtable index
-   (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md))
+5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET (now beats Redis at
+   `-P 64`). Remaining: io_uring thread-per-core + single-owner shards (latency-bound `-P 1`),
+   SwissTable-SIMD → dashtable index (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md))
 6. ⬜ Replication, clustering, more data types (lists/hashes/sets/sorted-sets)
 
 ## License

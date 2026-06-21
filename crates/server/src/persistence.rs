@@ -34,7 +34,7 @@ impl Aof {
     }
 
     /// Append one command. Flushes to the OS so a crash loses at most in-flight buffered bytes.
-    pub fn append(&self, argv: &[Vec<u8>]) -> io::Result<()> {
+    pub fn append(&self, argv: &[&[u8]]) -> io::Result<()> {
         let mut buf = Vec::with_capacity(32);
         encode_command(argv, &mut buf);
         let mut w = self.writer.lock().unwrap();
@@ -44,7 +44,7 @@ impl Aof {
 }
 
 /// Encode an argument vector as a RESP array of bulk strings (the AOF on-disk form).
-fn encode_command(argv: &[Vec<u8>], out: &mut Vec<u8>) {
+fn encode_command(argv: &[&[u8]], out: &mut Vec<u8>) {
     out.push(b'*');
     out.extend_from_slice(argv.len().to_string().as_bytes());
     out.extend_from_slice(b"\r\n");
@@ -224,10 +224,10 @@ mod tests {
         let cfg = Config::default();
         {
             let aof = Aof::open(&path).unwrap();
-            aof.append(&[b"SET".to_vec(), b"x".to_vec(), b"1".to_vec()])
+            aof.append(&[b"SET".as_ref(), b"x".as_ref(), b"1".as_ref()])
                 .unwrap();
-            aof.append(&[b"INCR".to_vec(), b"x".to_vec()]).unwrap();
-            aof.append(&[b"SET".to_vec(), b"y".to_vec(), b"hi".to_vec()])
+            aof.append(&[b"INCR".as_ref(), b"x".as_ref()]).unwrap();
+            aof.append(&[b"SET".as_ref(), b"y".as_ref(), b"hi".as_ref()])
                 .unwrap();
         }
         let st = Store::new(4, 0);

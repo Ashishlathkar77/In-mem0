@@ -18,3 +18,4 @@ path = "src/main.rs"
 [dependencies]
 inmem-core.workspace = true
 inmem-proto.workspace = true
+mimalloc = { version = "0.1", default-features = false }
