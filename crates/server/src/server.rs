@@ -18,6 +18,9 @@ pub struct Server {
     pub repl: Replication,
     /// True when running as a replica — rejects writes from normal clients.
     pub read_only: bool,
+    /// TLS acceptor when TLS is configured (feature `tls`).
+    #[cfg(feature = "tls")]
+    pub tls: Option<Arc<crate::tls::TlsAcceptor>>,
 }
 
 impl Server {
@@ -48,12 +51,31 @@ impl Server {
         };
 
         let read_only = config.replicaof.is_some();
+
+        #[cfg(feature = "tls")]
+        let tls = match (&config.tls_cert, &config.tls_key) {
+            (Some(cert), Some(key)) => {
+                let acceptor = crate::tls::TlsAcceptor::new(cert, key)?;
+                eprintln!("TLS enabled (cert {})", cert.display());
+                Some(Arc::new(acceptor))
+            }
+            (None, None) => None,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "both --tls-cert and --tls-key are required for TLS",
+                ))
+            }
+        };
+
         Ok(Arc::new(Server {
             store,
             config,
             aof,
             repl: Replication::new(),
             read_only,
+            #[cfg(feature = "tls")]
+            tls,
         }))
     }
 

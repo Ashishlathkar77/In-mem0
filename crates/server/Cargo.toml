@@ -19,3 +19,10 @@ path = "src/main.rs"
 inmem-core.workspace = true
 inmem-proto.workspace = true
 mimalloc = { version = "0.1", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
+
+[features]
+default = []
+# Encrypted client connections via rustls. Build/run with: cargo build --features tls
+tls = ["dep:rustls", "dep:rustls-pemfile"]

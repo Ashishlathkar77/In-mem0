@@ -25,7 +25,21 @@ const READ_CHUNK: usize = 64 * 1024;
 
 pub fn handle(stream: TcpStream, server: Arc<Server>, id: u64) {
     let _ = stream.set_nodelay(true);
-    if let Err(e) = run(stream, &server, id) {
+
+    // With TLS configured, wrap the socket; replication SYNC is only offered on plaintext.
+    #[cfg(feature = "tls")]
+    if let Some(acceptor) = server.tls.clone() {
+        match acceptor.accept(stream) {
+            Ok(tls_stream) => {
+                let _ = run(tls_stream, &server, id, None);
+            }
+            Err(e) => eprintln!("tls handshake failed: {e}"),
+        }
+        return;
+    }
+
+    let raw_for_sync = stream.try_clone().ok();
+    if let Err(e) = run(stream, &server, id, raw_for_sync) {
         let _ = e; // routine: client disconnects show up here
     }
 }
@@ -37,7 +51,15 @@ fn upper<'a>(name: &[u8], buf: &'a mut [u8; 24]) -> &'a [u8] {
     &buf[..n]
 }
 
-fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<()> {
+/// Drive one connection. Generic over the stream so a plain `TcpStream` or a TLS-wrapped stream
+/// both work. `raw_for_sync` is a cloneable TCP handle used only to register a replica feed on
+/// `SYNC` (present for plaintext connections, `None` over TLS).
+fn run<S: Read + Write>(
+    mut stream: S,
+    server: &Arc<Server>,
+    id: u64,
+    raw_for_sync: Option<TcpStream>,
+) -> std::io::Result<()> {
     let authed = server.config.requirepass.is_none();
     let mut st = ConnState::new(id, authed);
     let mut inbuf: Vec<u8> = Vec::with_capacity(READ_CHUNK);
@@ -83,11 +105,20 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
                     stream.write_all(&outbuf)?;
                     outbuf.clear();
                 }
-                let snapshot = server.store.dump_commands();
-                if let Ok(clone) = stream.try_clone() {
-                    server.repl.add_replica_with_snapshot(clone, &snapshot);
+                match raw_for_sync {
+                    Some(raw) => {
+                        let snapshot = server.store.dump_commands();
+                        if let Ok(clone) = raw.try_clone() {
+                            server.repl.add_replica_with_snapshot(clone, &snapshot);
+                        }
+                        return passive_replica(stream);
+                    }
+                    None => {
+                        write_error(&mut outbuf, "ERR replication is not supported over TLS");
+                        stream.write_all(&outbuf)?;
+                        return Ok(());
+                    }
                 }
-                return passive_replica(stream);
             }
 
             // Auth gate: when a password is set, only AUTH/HELLO/QUIT/PING run unauthenticated.
@@ -151,7 +182,7 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
 /// After `SYNC`, the connection becomes a one-way write feed: the replication registry owns a
 /// clone for pushing commands, and this side just drains anything the replica sends (e.g. ACKs)
 /// until it disconnects.
-fn passive_replica(mut stream: TcpStream) -> std::io::Result<()> {
+fn passive_replica<S: Read>(mut stream: S) -> std::io::Result<()> {
     let mut chunk = [0u8; 4096];
     loop {
         if stream.read(&mut chunk)? == 0 {

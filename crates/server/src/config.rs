@@ -17,6 +17,10 @@ pub struct Config {
     pub replicaof: Option<(String, u16)>,
     /// Password to use when authenticating to the primary (if it requires one).
     pub masterauth: Option<String>,
+    /// TLS certificate chain (PEM). With `tls_key`, enables TLS (requires the `tls` feature).
+    pub tls_cert: Option<PathBuf>,
+    /// TLS private key (PEM).
+    pub tls_key: Option<PathBuf>,
     /// Working directory for persistence files.
     pub dir: PathBuf,
     pub aof_file: String,
@@ -37,6 +41,8 @@ impl Default for Config {
             requirepass: None,
             replicaof: None,
             masterauth: None,
+            tls_cert: None,
+            tls_key: None,
             dir: PathBuf::from("."),
             aof_file: "inmem.aof".into(),
             snapshot_file: "inmem.snapshot".into(),
@@ -75,6 +81,12 @@ impl Config {
                 }
                 "requirepass" => cfg.requirepass = Some(need(&mut it, "requirepass")?),
                 "masterauth" => cfg.masterauth = Some(need(&mut it, "masterauth")?),
+                "tls-cert" | "tls-cert-file" => {
+                    cfg.tls_cert = Some(PathBuf::from(need(&mut it, "tls-cert")?))
+                }
+                "tls-key" | "tls-key-file" => {
+                    cfg.tls_key = Some(PathBuf::from(need(&mut it, "tls-key")?))
+                }
                 "replicaof" | "slaveof" => {
                     // Accept "host:port" or "host port".
                     let first = need(&mut it, "replicaof")?;
@@ -138,6 +150,8 @@ OPTIONS:
   --requirepass <PASS>   require AUTH with this password (default none)
   --replicaof <H:P>      run as a read-only replica of primary host:port
   --masterauth <PASS>    password to authenticate to the primary
+  --tls-cert <FILE>      PEM cert chain to enable TLS (needs `--features tls` build)
+  --tls-key <FILE>       PEM private key for TLS
   --dir <PATH>           directory for persistence files (default .)
   --aof-file <NAME>      AOF filename (default inmem.aof)
   --snapshot-file <NAME> snapshot filename (default inmem.snapshot)
