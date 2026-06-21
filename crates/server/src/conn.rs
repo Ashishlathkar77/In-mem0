@@ -2,18 +2,17 @@
 //!
 //! Threading model (v1): one OS thread per connection, all sharing the lock-sharded [`Store`].
 //! Connections to independent keys never contend (different shards), and pipelined requests are
-//! batched into a single write. This is simple, portable, and correct; the Linux thread-per-core
-//! + io_uring upgrade (ADR-001 D3/D4) is a drop-in replacement for this module.
+//! batched into a single write. The Linux thread-per-core + io_uring upgrade (ADR-001 D3/D4) is a
+//! drop-in replacement for this module.
 //!
-//! Hot path (phase 5): commands are parsed **zero-copy** — arguments are `(offset, len)` ranges
-//! into the read buffer, read as borrowed slices with no per-argument allocation. The hottest
-//! commands (GET/SET/PING/INCR/DECR) are served inline, with `GET` encoding the stored value
-//! straight into the output buffer via [`Store::read`] (no value copy). Everything else falls
-//! back to the owned-argv [`dispatch`] path.
+//! Hot path: commands are parsed **zero-copy** (arguments are `(offset,len)` ranges into the read
+//! buffer). The hottest commands (GET/SET/PING/INCR/DECR) are served inline, with `GET` encoding
+//! the stored value straight into the output buffer via [`Store::read_str`] (no value copy).
+//! Everything else goes through the full [`dispatch`].
 
 use crate::commands::{dispatch, ConnState};
 use crate::server::Server;
-use inmem_core::SetOptions;
+use inmem_core::{SetOptions, StrRead};
 use inmem_proto::{
     parse_command_ranges, write_bulk, write_error, write_int, write_null, write_simple,
 };
@@ -24,29 +23,22 @@ use std::sync::Arc;
 const READ_CHUNK: usize = 64 * 1024;
 
 pub fn handle(stream: TcpStream, server: Arc<Server>, id: u64) {
-    // TCP_NODELAY matters for latency: Nagle's algorithm would otherwise delay small replies.
     let _ = stream.set_nodelay(true);
     if let Err(e) = run(stream, &server, id) {
         let _ = e; // routine: client disconnects show up here
     }
 }
 
-/// ASCII-uppercase a short command name into a stack buffer for matching, avoiding a heap
-/// allocation per command. Returns the uppercased bytes (truncated to the buffer if longer).
 fn upper<'a>(name: &[u8], buf: &'a mut [u8; 24]) -> &'a [u8] {
     let n = name.len().min(buf.len());
-    for i in 0..n {
-        buf[i] = name[i].to_ascii_uppercase();
-    }
+    buf[..n].copy_from_slice(&name[..n]);
+    buf[..n].make_ascii_uppercase();
     &buf[..n]
 }
 
 fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<()> {
-    let mut st = ConnState {
-        resp3: false,
-        name: Vec::new(),
-        id,
-    };
+    let authed = server.config.requirepass.is_none();
+    let mut st = ConnState::new(id, authed);
     let mut inbuf: Vec<u8> = Vec::with_capacity(READ_CHUNK);
     let mut outbuf: Vec<u8> = Vec::with_capacity(READ_CHUNK);
     let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(8);
@@ -55,7 +47,7 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
     loop {
         let n = stream.read(&mut chunk)?;
         if n == 0 {
-            return Ok(()); // client closed
+            return Ok(());
         }
         inbuf.extend_from_slice(&chunk[..n]);
 
@@ -64,7 +56,7 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
         loop {
             let consumed = match parse_command_ranges(&inbuf[cursor..], &mut ranges) {
                 Ok(Some(c)) => c,
-                Ok(None) => break, // need more bytes
+                Ok(None) => break,
                 Err(e) => {
                     write_error(&mut outbuf, &format!("ERR Protocol error: {e}"));
                     quit = true;
@@ -74,19 +66,21 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
             let base = cursor;
             cursor += consumed;
             if ranges.is_empty() {
-                continue; // empty/null command
+                continue;
             }
-
-            // Borrowed argument slices into `inbuf` (no copies).
             let argv: Vec<&[u8]> = ranges
                 .iter()
                 .map(|&(o, l)| &inbuf[base + o..base + o + l])
                 .collect();
 
+            // Auth gate: when a password is set, only AUTH/HELLO/QUIT/PING are allowed first.
+            if !st.authenticated && !is_preauth_ok(argv[0]) {
+                write_error(&mut outbuf, "NOAUTH Authentication required.");
+                continue;
+            }
+
             if !serve_fast(server, &st, &argv, &mut outbuf, &mut quit)? {
-                // Cold path: own the args and run the full dispatcher.
-                let owned: Vec<Vec<u8>> = argv.iter().map(|a| a.to_vec()).collect();
-                let outcome = dispatch(&server.store, &owned, &mut st, &server.config);
+                let outcome = dispatch(&server.store, &argv, &mut st, &server.config);
                 if outcome.persist {
                     if let Some(aof) = &server.aof {
                         if let Err(e) = aof.append(&argv) {
@@ -120,8 +114,13 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
     }
 }
 
-/// Try to serve the command on the zero-copy fast path. Returns `Ok(true)` if handled (reply
-/// written to `out`), `Ok(false)` if the caller should use the cold dispatch path.
+/// Commands permitted before authentication.
+fn is_preauth_ok(cmd: &[u8]) -> bool {
+    let mut buf = [0u8; 24];
+    matches!(upper(cmd, &mut buf), b"AUTH" | b"HELLO" | b"QUIT" | b"PING")
+}
+
+/// Try to serve on the zero-copy fast path. Returns Ok(true) if handled.
 fn serve_fast(
     server: &Arc<Server>,
     st: &ConnState,
@@ -135,14 +134,17 @@ fn serve_fast(
 
     match name {
         b"GET" if argv.len() == 2 => {
-            store.read(argv[1], |v| match v {
-                Some(b) => write_bulk(out, b),
-                None => write_null(out, st.resp3),
+            store.read_str(argv[1], |r| match r {
+                StrRead::Str(b) => write_bulk(out, b),
+                StrRead::None => write_null(out, st.resp3),
+                StrRead::WrongType => write_error(
+                    out,
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
+                ),
             });
             Ok(true)
         }
         b"SET" if argv.len() == 3 => {
-            // simple SET (no options) — the benchmark-dominant write
             store.set(argv[1], argv[2], SetOptions::default());
             if let Some(aof) = &server.aof {
                 if aof.append(argv).is_err() {
@@ -180,7 +182,13 @@ fn fast_incr(
             }
             write_int(out, v);
         }
-        Err(e) => write_error(out, &format!("ERR {e}")),
+        Err(e) => {
+            if e == inmem_core::WRONGTYPE {
+                write_error(out, e);
+            } else {
+                write_error(out, &format!("ERR {e}"));
+            }
+        }
     }
     Ok(true)
 }

@@ -27,7 +27,7 @@ impl Server {
                 config.aof_path().display()
             );
         } else if config.snapshot_path().exists() {
-            let n = crate::persistence::load_snapshot(&store, &config.snapshot_path())?;
+            let n = crate::persistence::load_snapshot(&store, &config.snapshot_path(), &config)?;
             if n > 0 {
                 eprintln!(
                     "loaded {n} keys from snapshot {}",

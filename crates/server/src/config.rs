@@ -11,6 +11,8 @@ pub struct Config {
     pub maxmemory: usize,
     /// Enable append-only-file persistence.
     pub appendonly: bool,
+    /// Optional password; when set, connections must `AUTH` before other commands.
+    pub requirepass: Option<String>,
     /// Working directory for persistence files.
     pub dir: PathBuf,
     pub aof_file: String,
@@ -28,6 +30,7 @@ impl Default for Config {
             shards,
             maxmemory: 0,
             appendonly: false,
+            requirepass: None,
             dir: PathBuf::from("."),
             aof_file: "inmem.aof".into(),
             snapshot_file: "inmem.snapshot".into(),
@@ -64,6 +67,7 @@ impl Config {
                     cfg.appendonly =
                         matches!(v.to_ascii_lowercase().as_str(), "yes" | "true" | "1");
                 }
+                "requirepass" => cfg.requirepass = Some(need(&mut it, "requirepass")?),
                 "dir" => cfg.dir = PathBuf::from(need(&mut it, "dir")?),
                 "aof-file" | "appendfilename" => cfg.aof_file = need(&mut it, "aof-file")?,
                 "snapshot-file" | "dbfilename" => {
@@ -113,6 +117,7 @@ OPTIONS:
   --shards <N>           number of store shards (default: CPU count)
   --maxmemory <SIZE>     memory budget, e.g. 512mb, 2gb (default: unbounded)
   --appendonly <yes|no>  enable AOF persistence (default no)
+  --requirepass <PASS>   require AUTH with this password (default none)
   --dir <PATH>           directory for persistence files (default .)
   --aof-file <NAME>      AOF filename (default inmem.aof)
   --snapshot-file <NAME> snapshot filename (default inmem.snapshot)
