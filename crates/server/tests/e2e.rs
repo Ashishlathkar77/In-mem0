@@ -98,3 +98,73 @@ fn resp3_hello_and_null() {
     // after HELLO 3, a missing GET should be the RESP3 null `_\r\n`
     exchange(&mut s, b"*2\r\n$3\r\nGET\r\n$1\r\nq\r\n", b"_\r\n");
 }
+
+/// Boot a server from an explicit config, returning (server, address).
+fn boot_cfg(cfg: Config) -> String {
+    let server = Server::bootstrap(cfg).expect("bootstrap");
+    let listener = server.bind().expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    server.start_replication();
+    std::thread::spawn(move || {
+        let _ = server.run(listener);
+    });
+    addr
+}
+
+/// Read available bytes (best effort) as a string for loose assertions.
+fn read_some(s: &mut TcpStream) -> String {
+    let mut buf = [0u8; 4096];
+    match s.read(&mut buf) {
+        Ok(n) => String::from_utf8_lossy(&buf[..n]).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+#[test]
+fn replication_propagates_writes() {
+    // Primary
+    let primary_addr = boot();
+    let (host, port) = primary_addr.rsplit_once(':').unwrap();
+
+    // Replica pointed at the primary
+    let replica_cfg = Config {
+        port: 0,
+        shards: 4,
+        replicaof: Some((host.to_string(), port.parse().unwrap())),
+        ..Config::default()
+    };
+    let replica_addr = boot_cfg(replica_cfg);
+
+    // Give the replica a moment to connect + SYNC.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Write on the primary.
+    let mut p = connect(&primary_addr);
+    exchange(
+        &mut p,
+        b"*3\r\n$3\r\nSET\r\n$5\r\nrepl1\r\n$3\r\nyes\r\n",
+        b"+OK\r\n",
+    );
+
+    // Poll the replica until the value propagates (async replication).
+    let mut r = connect(&replica_addr);
+    let mut got = false;
+    for _ in 0..50 {
+        r.write_all(b"*2\r\n$3\r\nGET\r\n$5\r\nrepl1\r\n").unwrap();
+        if read_some(&mut r).contains("yes") {
+            got = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(got, "write did not propagate to replica");
+
+    // Replica must reject client writes.
+    let mut r2 = connect(&replica_addr);
+    r2.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\n1\r\n")
+        .unwrap();
+    assert!(
+        read_some(&mut r2).contains("READONLY"),
+        "replica should be read-only"
+    );
+}

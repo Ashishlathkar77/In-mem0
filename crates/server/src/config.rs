@@ -13,6 +13,10 @@ pub struct Config {
     pub appendonly: bool,
     /// Optional password; when set, connections must `AUTH` before other commands.
     pub requirepass: Option<String>,
+    /// If set, run as a read-only replica of this primary `(host, port)`.
+    pub replicaof: Option<(String, u16)>,
+    /// Password to use when authenticating to the primary (if it requires one).
+    pub masterauth: Option<String>,
     /// Working directory for persistence files.
     pub dir: PathBuf,
     pub aof_file: String,
@@ -31,6 +35,8 @@ impl Default for Config {
             maxmemory: 0,
             appendonly: false,
             requirepass: None,
+            replicaof: None,
+            masterauth: None,
             dir: PathBuf::from("."),
             aof_file: "inmem.aof".into(),
             snapshot_file: "inmem.snapshot".into(),
@@ -68,6 +74,18 @@ impl Config {
                         matches!(v.to_ascii_lowercase().as_str(), "yes" | "true" | "1");
                 }
                 "requirepass" => cfg.requirepass = Some(need(&mut it, "requirepass")?),
+                "masterauth" => cfg.masterauth = Some(need(&mut it, "masterauth")?),
+                "replicaof" | "slaveof" => {
+                    // Accept "host:port" or "host port".
+                    let first = need(&mut it, "replicaof")?;
+                    let (host, port) = if let Some((h, p)) = first.split_once(':') {
+                        (h.to_string(), p.to_string())
+                    } else {
+                        (first, need(&mut it, "replicaof")?)
+                    };
+                    let port: u16 = port.parse().map_err(|_| "invalid replicaof port")?;
+                    cfg.replicaof = Some((host, port));
+                }
                 "dir" => cfg.dir = PathBuf::from(need(&mut it, "dir")?),
                 "aof-file" | "appendfilename" => cfg.aof_file = need(&mut it, "aof-file")?,
                 "snapshot-file" | "dbfilename" => {
@@ -118,6 +136,8 @@ OPTIONS:
   --maxmemory <SIZE>     memory budget, e.g. 512mb, 2gb (default: unbounded)
   --appendonly <yes|no>  enable AOF persistence (default no)
   --requirepass <PASS>   require AUTH with this password (default none)
+  --replicaof <H:P>      run as a read-only replica of primary host:port
+  --masterauth <PASS>    password to authenticate to the primary
   --dir <PATH>           directory for persistence files (default .)
   --aof-file <NAME>      AOF filename (default inmem.aof)
   --snapshot-file <NAME> snapshot filename (default inmem.snapshot)

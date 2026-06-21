@@ -2,6 +2,7 @@
 
 use crate::config::Config;
 use crate::persistence::Aof;
+use crate::repl::Replication;
 use inmem_core::Store;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +14,10 @@ pub struct Server {
     pub store: Store,
     pub config: Config,
     pub aof: Option<Aof>,
+    /// Registry of connected replicas (this node acting as a primary).
+    pub repl: Replication,
+    /// True when running as a replica — rejects writes from normal clients.
+    pub read_only: bool,
 }
 
 impl Server {
@@ -42,7 +47,14 @@ impl Server {
             None
         };
 
-        Ok(Arc::new(Server { store, config, aof }))
+        let read_only = config.replicaof.is_some();
+        Ok(Arc::new(Server {
+            store,
+            config,
+            aof,
+            repl: Replication::new(),
+            read_only,
+        }))
     }
 
     /// Start the background expiry reaper (samples and drops expired keys every 100ms).
@@ -55,6 +67,13 @@ impl Server {
                 server.store.purge_expired();
             })
             .expect("spawn reaper");
+    }
+
+    /// If configured as a replica, start the background sync thread.
+    pub fn start_replication(self: &Arc<Self>) {
+        if self.read_only {
+            crate::repl::start_replica(Arc::clone(self));
+        }
     }
 
     /// Bind the configured address. Use port 0 to get an ephemeral port (handy for tests);
@@ -81,6 +100,7 @@ impl Server {
                 ""
             },
         );
+        self.start_replication();
         self.run(listener)
     }
 

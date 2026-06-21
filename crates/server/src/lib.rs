@@ -7,6 +7,7 @@ pub mod commands;
 pub mod config;
 pub mod conn;
 pub mod persistence;
+pub mod repl;
 pub mod server;
 
 pub use config::Config;

@@ -11,6 +11,7 @@
 //! Everything else goes through the full [`dispatch`].
 
 use crate::commands::{dispatch, ConnState};
+use crate::repl::{encode, is_write_command};
 use crate::server::Server;
 use inmem_core::{SetOptions, StrRead};
 use inmem_proto::{
@@ -73,29 +74,62 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
                 .map(|&(o, l)| &inbuf[base + o..base + o + l])
                 .collect();
 
-            // Auth gate: when a password is set, only AUTH/HELLO/QUIT/PING are allowed first.
-            if !st.authenticated && !is_preauth_ok(argv[0]) {
+            let mut ubuf = [0u8; 24];
+            let name = upper(argv[0], &mut ubuf).to_vec();
+
+            // A replica subscribing for the write stream: send the snapshot, register, go passive.
+            if name == b"SYNC" || name == b"PSYNC" {
+                if !outbuf.is_empty() {
+                    stream.write_all(&outbuf)?;
+                    outbuf.clear();
+                }
+                let snapshot = server.store.dump_commands();
+                if let Ok(clone) = stream.try_clone() {
+                    server.repl.add_replica_with_snapshot(clone, &snapshot);
+                }
+                return passive_replica(stream);
+            }
+
+            // Auth gate: when a password is set, only AUTH/HELLO/QUIT/PING run unauthenticated.
+            if !st.authenticated && !is_preauth_ok(&name) {
                 write_error(&mut outbuf, "NOAUTH Authentication required.");
                 continue;
             }
+            // Read-only replica: reject client writes.
+            if server.read_only && is_write_command(&name) {
+                write_error(
+                    &mut outbuf,
+                    "READONLY You can't write against a read only replica.",
+                );
+                continue;
+            }
 
-            if !serve_fast(server, &st, &argv, &mut outbuf, &mut quit)? {
-                let outcome = dispatch(&server.store, &argv, &mut st, &server.config);
-                if outcome.persist {
-                    if let Some(aof) = &server.aof {
-                        if let Err(e) = aof.append(&argv) {
-                            write_error(&mut outbuf, &format!("ERR aof write failed: {e}"));
-                            quit = true;
-                            break;
-                        }
+            let handled = serve_fast(server, &st, &argv, &mut outbuf);
+            let is_write = match handled {
+                Some(w) => w,
+                None => {
+                    let outcome = dispatch(&server.store, &argv, &mut st, &server.config);
+                    outcome.reply.encode(&mut outbuf, st.resp3);
+                    if outcome.quit {
+                        quit = true;
+                    }
+                    outcome.persist
+                }
+            };
+
+            if is_write {
+                // Durability + replication: encode once, append to AOF, fan out to replicas.
+                let mut bytes = Vec::with_capacity(32);
+                encode(&mut bytes, &argv);
+                if let Some(aof) = &server.aof {
+                    if let Err(e) = aof.append(&argv) {
+                        write_error(&mut outbuf, &format!("ERR aof write failed: {e}"));
+                        quit = true;
                     }
                 }
-                outcome.reply.encode(&mut outbuf, st.resp3);
-                if outcome.quit {
-                    quit = true;
-                    break;
-                }
+                server.repl.propagate(&bytes);
             }
+
             if quit {
                 break;
             }
@@ -114,20 +148,30 @@ fn run(mut stream: TcpStream, server: &Arc<Server>, id: u64) -> std::io::Result<
     }
 }
 
-/// Commands permitted before authentication.
-fn is_preauth_ok(cmd: &[u8]) -> bool {
-    let mut buf = [0u8; 24];
-    matches!(upper(cmd, &mut buf), b"AUTH" | b"HELLO" | b"QUIT" | b"PING")
+/// After `SYNC`, the connection becomes a one-way write feed: the replication registry owns a
+/// clone for pushing commands, and this side just drains anything the replica sends (e.g. ACKs)
+/// until it disconnects.
+fn passive_replica(mut stream: TcpStream) -> std::io::Result<()> {
+    let mut chunk = [0u8; 4096];
+    loop {
+        if stream.read(&mut chunk)? == 0 {
+            return Ok(());
+        }
+    }
 }
 
-/// Try to serve on the zero-copy fast path. Returns Ok(true) if handled.
+fn is_preauth_ok(name_upper: &[u8]) -> bool {
+    matches!(name_upper, b"AUTH" | b"HELLO" | b"QUIT" | b"PING")
+}
+
+/// Try to serve on the zero-copy fast path. `Some(is_write)` if handled (reply already written);
+/// `None` to fall back to [`dispatch`]. Does not handle AOF/replication — the caller does.
 fn serve_fast(
     server: &Arc<Server>,
     st: &ConnState,
     argv: &[&[u8]],
     out: &mut Vec<u8>,
-    quit: &mut bool,
-) -> std::io::Result<bool> {
+) -> Option<bool> {
     let mut ubuf = [0u8; 24];
     let name = upper(argv[0], &mut ubuf);
     let store = &server.store;
@@ -137,50 +181,31 @@ fn serve_fast(
             store.read_str(argv[1], |r| match r {
                 StrRead::Str(b) => write_bulk(out, b),
                 StrRead::None => write_null(out, st.resp3),
-                StrRead::WrongType => write_error(
-                    out,
-                    "WRONGTYPE Operation against a key holding the wrong kind of value",
-                ),
+                StrRead::WrongType => write_error(out, inmem_core::WRONGTYPE),
             });
-            Ok(true)
+            Some(false)
         }
         b"SET" if argv.len() == 3 => {
             store.set(argv[1], argv[2], SetOptions::default());
-            if let Some(aof) = &server.aof {
-                if aof.append(argv).is_err() {
-                    write_error(out, "ERR aof write failed");
-                    *quit = true;
-                    return Ok(true);
-                }
-            }
             write_simple(out, "OK");
-            Ok(true)
+            Some(true)
         }
         b"PING" if argv.len() == 1 => {
             write_simple(out, "PONG");
-            Ok(true)
+            Some(false)
         }
-        b"INCR" if argv.len() == 2 => fast_incr(server, argv, 1, out),
-        b"DECR" if argv.len() == 2 => fast_incr(server, argv, -1, out),
-        _ => Ok(false),
+        b"INCR" if argv.len() == 2 => Some(fast_incr(store, argv[1], 1, out)),
+        b"DECR" if argv.len() == 2 => Some(fast_incr(store, argv[1], -1, out)),
+        _ => None,
     }
 }
 
-fn fast_incr(
-    server: &Arc<Server>,
-    argv: &[&[u8]],
-    delta: i64,
-    out: &mut Vec<u8>,
-) -> std::io::Result<bool> {
-    match server.store.incr_by(argv[1], delta) {
+/// Returns whether the operation was a (successful) write that should be propagated.
+fn fast_incr(store: &inmem_core::Store, key: &[u8], delta: i64, out: &mut Vec<u8>) -> bool {
+    match store.incr_by(key, delta) {
         Ok(v) => {
-            if let Some(aof) = &server.aof {
-                if aof.append(argv).is_err() {
-                    write_error(out, "ERR aof write failed");
-                    return Ok(true);
-                }
-            }
             write_int(out, v);
+            true
         }
         Err(e) => {
             if e == inmem_core::WRONGTYPE {
@@ -188,7 +213,7 @@ fn fast_incr(
             } else {
                 write_error(out, &format!("ERR {e}"));
             }
+            false
         }
     }
-    Ok(true)
 }
