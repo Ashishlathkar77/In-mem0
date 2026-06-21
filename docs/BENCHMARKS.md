@@ -1,8 +1,32 @@
 # Benchmarks — honest status
 
-Run with `scripts/bench.sh`. Numbers below are from a local dev machine (Apple Silicon, macOS,
-`redis-benchmark`, 1M requests, 50 clients). **macOS is the worst case for us** — it has no
-io_uring, so our portable fallback is plain blocking sockets. Treat these as directional.
+Local dev machine (Apple Silicon, macOS). **macOS is the worst case for us** — no io_uring, so the
+portable fallback is plain blocking sockets. Numbers are representative single runs, reproducible
+with the scripts below. Treat as directional, not certified records.
+
+## Multi-framework comparison (`scripts/bench-all.sh`)
+
+Uniform driver: **`memtier_benchmark`** (so Memcached is measured on equal footing), mixed
+**GET/SET 1:1**, 64-byte values, 40 connections, 50k requests/connection. Aggregate **ops/sec**
+(higher is better). Versions: Redis 8.2.2, Valkey 9.1, KeyDB 6.3.4, Memcached 1.6.42.
+
+| pipeline | **inmem** | redis | valkey | keydb | memcached |
+|---|--:|--:|--:|--:|--:|
+| `-P 1`  | 212,968 | **240,676** | 234,849 | 186,284 | 198,144 |
+| `-P 16` | **2,153,685** 🥇 | 1,772,910 | 1,619,134 | 1,463,352 | 1,931,817 |
+| `-P 64` | **4,047,772** 🥇 | 2,405,332 | 1,857,776 | 1,938,204 | 2,099,341 |
+
+**inmem is the fastest of all systems tested at `-P 16` and `-P 64`** — at `-P 64` that's 1.68×
+Redis, 2.09× KeyDB, 2.18× Valkey, 1.93× Memcached. The only case it trails is the pure
+latency-bound `-P 1` (one op per round-trip), where Redis/Valkey's single epoll loop still beats
+our thread-per-connection model. That gap is what the io_uring thread-per-core runtime targets.
+
+**Dragonfly and Garnet** are Linux/.NET-only and can't run natively on this macOS box; both are
+thread-per-core and very fast at high core counts. Run them via Docker with the same memtier
+parameters — see [scripts/bench-docker.md](../scripts/bench-docker.md). This comparison does not
+yet include them, and we don't claim to beat them until measured.
+
+## inmem vs Redis only (`scripts/bench.sh`, `redis-benchmark`)
 
 ## Results after phase-5 hot-path optimization (v0.0.1)
 

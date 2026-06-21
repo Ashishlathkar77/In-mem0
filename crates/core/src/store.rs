@@ -50,6 +50,9 @@ pub struct SetOptions {
     pub expire_at: Option<u64>,
 }
 
+/// One entry from [`Store::snapshot`]: `(key, value, expire_at_ms)`.
+pub type SnapshotEntry = (Box<[u8]>, Box<[u8]>, Option<u64>);
+
 /// Result of a TTL query.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Ttl {
@@ -414,7 +417,7 @@ impl Store {
 
     /// Snapshot every live key as `(key, value, expire_at)`. Used by persistence (snapshot/AOF
     /// rewrite). O(n); call off the hot path.
-    pub fn snapshot(&self) -> Vec<(Box<[u8]>, Box<[u8]>, Option<u64>)> {
+    pub fn snapshot(&self) -> Vec<SnapshotEntry> {
         let now = now_ms();
         let mut out = Vec::new();
         for s in &self.shards {
@@ -522,5 +525,76 @@ mod tests {
         assert_eq!(st.snapshot().len(), 100);
         st.flush_all();
         assert_eq!(st.dbsize(), 0);
+    }
+
+    /// Reliability: concurrent INCR on a shared key must be exact. Each `incr_by` holds the shard
+    /// lock for the whole read-modify-write, so N threads × M increments must total N×M with no
+    /// lost updates — the property a multithreaded cache lives or dies by.
+    #[test]
+    fn concurrent_incr_is_exact() {
+        use std::sync::Arc;
+        let st = Arc::new(Store::new(8, 0));
+        let threads = 8;
+        let per = 50_000i64;
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let st = Arc::clone(&st);
+                std::thread::spawn(move || {
+                    for _ in 0..per {
+                        st.incr_by(b"counter", 1).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            st.get(b"counter").as_deref(),
+            Some((threads as i64 * per).to_string().as_bytes())
+        );
+    }
+
+    /// Reliability: many threads doing independent set/get/del across the keyspace must never
+    /// corrupt the store (no panics, accounting stays consistent, survivors are readable).
+    #[test]
+    fn concurrent_mixed_ops_stay_consistent() {
+        use std::sync::Arc;
+        let st = Arc::new(Store::new(16, 0));
+        let handles: Vec<_> = (0..8u64)
+            .map(|t| {
+                let st = Arc::clone(&st);
+                std::thread::spawn(move || {
+                    let mut state = t.wrapping_mul(0x9E3779B97F4A7C15) | 1;
+                    let mut rng = || {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        state
+                    };
+                    for _ in 0..100_000 {
+                        let k = (rng() % 5000).to_le_bytes();
+                        match rng() % 4 {
+                            0 | 1 => {
+                                st.set(&k, b"value", SetOptions::default());
+                            }
+                            2 => {
+                                st.get(&k);
+                            }
+                            _ => {
+                                st.del(&k);
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Every key the store still reports as present must be readable (accounting consistent).
+        for k in st.keys() {
+            assert!(st.get(&k).is_some(), "key reported but not readable");
+        }
     }
 }

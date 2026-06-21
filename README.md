@@ -4,10 +4,11 @@ An open-source in-memory cache / key-value store, built in Rust, designed to bea
 throughput, tail latency, and memory efficiency — while staying reliable.
 
 > Working name. Status: **complete working v1** — a Redis-protocol-compatible server with
-> eviction, TTL, and persistence. **It already beats Redis in the high-pipelining regime**
-> (`-P 64`: SET +23%, GET +16%) and is at parity around `-P 16`; Redis still wins the
-> latency-bound `-P 1` case (the io_uring thread-per-core work targets that). Honest numbers and
-> roadmap in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> eviction, TTL, and persistence. **Fastest of every cache benchmarked (Redis, Valkey, KeyDB,
+> Memcached) at `-P 16` and `-P 64`** — at `-P 64`, 1.68× Redis and 2.1–2.2× KeyDB/Valkey.
+> Redis/Valkey still win the latency-bound `-P 1` case (the io_uring work targets that), and
+> Dragonfly/Garnet aren't measured yet (Linux/.NET — Docker matrix provided). Honest numbers:
+> [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how
