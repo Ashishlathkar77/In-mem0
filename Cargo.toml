@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/proto",
+    "crates/server",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/hemut/in-mem0"
+rust-version = "1.96"
+
+[workspace.dependencies]
+inmem-core = { path = "crates/core" }
+inmem-proto = { path = "crates/proto" }
+
+# Shared third-party deps (kept minimal on the hot path)
+ahash = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

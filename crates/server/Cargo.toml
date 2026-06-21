@@ -1,0 +1,20 @@
+[package]
+name = "inmem-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Thread-per-core RESP server (inmemd) wrapping inmem-core."
+
+[lib]
+name = "inmem_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "inmemd"
+path = "src/main.rs"
+
+[dependencies]
+inmem-core.workspace = true
+inmem-proto.workspace = true
