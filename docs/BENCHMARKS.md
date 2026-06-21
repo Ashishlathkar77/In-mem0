@@ -12,14 +12,19 @@ Uniform driver: **`memtier_benchmark`** (so Memcached is measured on equal footi
 
 | pipeline | **inmem** | redis | valkey | keydb | memcached |
 |---|--:|--:|--:|--:|--:|
-| `-P 1`  | 212,968 | **240,676** | 234,849 | 186,284 | 198,144 |
-| `-P 16` | **2,153,685** 🥇 | 1,772,910 | 1,619,134 | 1,463,352 | 1,931,817 |
-| `-P 64` | **4,047,772** 🥇 | 2,405,332 | 1,857,776 | 1,938,204 | 2,099,341 |
+| `-P 1`  | ~205k | 232k | **248k** | 201k | 216k |
+| `-P 16` | **2.07M** 🥇 | 1.77M | 1.61M | 1.52M | 1.97M |
+| `-P 64` | **3.39M** 🥇 | 2.79M | 1.78M | ~2.0M | 2.13M |
 
-**inmem is the fastest of all systems tested at `-P 16` and `-P 64`** — at `-P 64` that's 1.68×
-Redis, 2.09× KeyDB, 2.18× Valkey, 1.93× Memcached. The only case it trails is the pure
-latency-bound `-P 1` (one op per round-trip), where Redis/Valkey's single epoll loop still beats
-our thread-per-connection model. That gap is what the io_uring thread-per-core runtime targets.
+**inmem is the fastest of all systems tested at `-P 16` and `-P 64`** — at `-P 64` that's ~1.2×
+Redis and ~1.7–1.9× Valkey/KeyDB. The only case it trails is the pure latency-bound `-P 1` (one op
+per round-trip), where the single epoll loop of Redis/Valkey still beats our thread-per-connection
+model. That gap is what the io_uring thread-per-core runtime targets (ADR-002).
+
+Numbers are representative single runs on a shared laptop and vary ±10–15% run to run (an earlier
+run measured inmem `-P 64` at ~4.05M). Re-run `scripts/bench-all.sh` for your own hardware. One
+KeyDB `-P 64` sample produced an obviously-bogus 105M figure (a memtier output-parse glitch);
+re-measured cleanly it is ~2.0M, shown above.
 
 **Dragonfly and Garnet** are Linux/.NET-only and can't run natively on this macOS box; both are
 thread-per-core and very fast at high core counts. Run them via Docker with the same memtier

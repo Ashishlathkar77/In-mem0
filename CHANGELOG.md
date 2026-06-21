@@ -21,7 +21,17 @@ All notable changes to this project are documented here. Format based on
   KeyDB, Memcached via memtier; Dragonfly/Garnet documented as Docker-based).
 - Docs: research survey, ADR-001 architecture, benchmarks, contributing/security/CoC.
 
+- **Data types**: lists (LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE), hashes (HSET/HGET/HMGET/HDEL/
+  HGETALL/HKEYS/HVALS/HLEN/HEXISTS), sets (SADD/SREM/SISMEMBER/SCARD/SMEMBERS), sorted sets
+  (ZADD/ZSCORE/ZREM/ZCARD/ZRANGE [WITHSCORES]). `WRONGTYPE` errors; `TYPE`.
+- **AUTH** via `--requirepass` (NOAUTH gate).
+- **Async replication**: `--replicaof host:port` read-only replicas with initial snapshot sync +
+  live command streaming; `--masterauth`; `-READONLY` on replica writes.
+- **TLS** (optional, `--features tls`): rustls-based encrypted client connections.
+- Type-generic snapshots (RESP reconstruction-command dumps).
+
 ### Known limitations
-- Latency-bound (`-P 1`) throughput trails Redis; the io_uring thread-per-core runtime (Linux)
-  is the planned fix.
-- No auth/TLS/replication/clustering yet. String values only (no lists/hashes/sets yet).
+- Latency-bound (`-P 1`) throughput trails Redis/Valkey; the io_uring thread-per-core runtime
+  (ADR-002, Linux) is the planned fix and is designed/scaffolded but not yet built.
+- Replication has no backlog/offset (a write racing the initial handshake may double-apply);
+  steady-state is exactly-once. No clustering/pub-sub yet.

@@ -48,10 +48,17 @@ Requires Rust 1.96+ (pinned in `rust-toolchain.toml`).
 
 ### Supported commands
 
-`PING ECHO HELLO QUIT SELECT COMMAND CONFIG CLIENT INFO DBSIZE FLUSHALL/FLUSHDB` ·
-`SET GET GETSET SETNX SETEX PSETEX MSET MGET APPEND STRLEN INCR DECR INCRBY DECRBY` ·
-`DEL UNLINK EXISTS TYPE EXPIRE PEXPIRE EXPIREAT PEXPIREAT PERSIST TTL PTTL KEYS SCAN` ·
-`SAVE BGSAVE`. RESP2 and RESP3, pipelining, TTL, `maxmemory` eviction, AOF + snapshots.
+- **Connection/admin**: `PING ECHO HELLO QUIT SELECT AUTH COMMAND CONFIG CLIENT INFO DBSIZE FLUSHALL/FLUSHDB SAVE BGSAVE`
+- **Strings**: `SET GET GETSET SETNX SETEX PSETEX MSET MGET APPEND STRLEN INCR DECR INCRBY DECRBY`
+- **Lists**: `LPUSH RPUSH LPOP RPOP LLEN LRANGE`
+- **Hashes**: `HSET HMSET HGET HMGET HDEL HLEN HEXISTS HGETALL HKEYS HVALS`
+- **Sets**: `SADD SREM SISMEMBER SCARD SMEMBERS`
+- **Sorted sets**: `ZADD ZSCORE ZREM ZCARD ZRANGE [WITHSCORES]`
+- **Keyspace**: `DEL UNLINK EXISTS TYPE EXPIRE PEXPIRE EXPIREAT PEXPIREAT PERSIST TTL PTTL KEYS SCAN`
+
+RESP2 + RESP3, pipelining, `WRONGTYPE` errors, TTL, `maxmemory` eviction, AOF + snapshots,
+**AUTH** (`--requirepass`), **async replication** (`--replicaof`), and optional **TLS**
+(`--features tls`, `--tls-cert/--tls-key`).
 
 ## Roadmap
 
@@ -59,10 +66,12 @@ Requires Rust 1.96+ (pinned in `rust-toolchain.toml`).
 2. ✅ S3-FIFO eviction + capacity-bounded store + TTL
 3. ✅ RESP2/3 codec + multithreaded server (full string/keyspace command set)
 4. ✅ AOF persistence + binary snapshots + benchmark harness vs Redis
-5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET (now beats Redis at
-   `-P 64`). Remaining: io_uring thread-per-core + single-owner shards (latency-bound `-P 1`),
-   SwissTable-SIMD → dashtable index (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md))
-6. ⬜ Replication, clustering, more data types (lists/hashes/sets/sorted-sets)
+5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET (beats Redis at `-P 16`
+   and `-P 64`). Remaining: io_uring thread-per-core + single-owner shards for the latency-bound
+   `-P 1` case (designed in [ADR-002](docs/architecture/ADR-002-io-uring-thread-per-core.md);
+   needs a Linux host), then SwissTable-SIMD → dashtable index.
+6. ✅ Data types (lists/hashes/sets/sorted-sets), AUTH, async replication, optional TLS
+7. ⬜ Clustering, pub/sub, more commands (LINDEX/ZRANGEBYSCORE/…), Redis-compatible PSYNC
 
 ## License
 
