@@ -25,14 +25,32 @@ below are real and reported in full; the x86 server run is the production-repres
 
 ### Conclusions (x86, 16 cores, 100 connections)
 - **inmem-portable beats Redis (~2×), Valkey, KeyDB, Dragonfly, and Memcached** at every pipeline
-  level that involves real batching. This is the multi-core thread-per-shard design paying off where
-  it should: many cores + many connections.
-- **Garnet is the strongest competitor** — it ties inmem at `-P 1`/`-P 16` and wins at `-P 64`
-  (5.08M vs 4.68M). Microsoft's thread-per-core .NET store is the bar to beat at extreme pipelining.
+  level that involves real batching — and beats Garnet at `-P 1` and `-P 16` too. These gaps are
+  2–3× and hold across runs.
+- **At `-P 64`, inmem and Garnet are co-fastest (a statistical tie), not a Garnet win.** The
+  `4.68M vs 5.08M` row above is **client-bound**: memtier with 4 threads can't push past ~5M, so it
+  caps both servers. Removing that bottleneck (more memtier threads) the *servers'* real ceilings
+  appear — and they're neck-and-neck:
+
+  | memtier threads (P64) | inmem-portable | garnet |
+  |---|--:|--:|
+  | t=4 (client-bound) | 4.8M | 5.0M |
+  | t=8  | 7.3M | 7.4M |
+  | t=12 | 7.6M | 8.6M |
+  | t=16 | 6.7–9.9M | 7.5–9.0M |
+
+  At t=16 the run-to-run variance (±20%) **exceeds** the inmem↔garnet difference, because the client,
+  server, and Garnet container all share the same 16 cores. **Honest verdict: inmem and Garnet are
+  the two fastest and indistinguishable at extreme pipelining on this rig; inmem is clearly ahead of
+  everything else.** A clean separation needs a proper setup (load generator on a *separate* machine,
+  pinned cores, many trials) — noted as future work, not claimed here.
 - **Memcached** has the best single-op `-P 1` (445k) but doesn't scale with pipelining.
-- **The io_uring runtime (v1) is still ~10–20% slower than the portable build** — it routes through
-  the allocating `dispatch` path and shares the `Mutex` store, so it lacks the zero-copy fast path
-  and lock-free shards. Fixing that (below) should make it the fastest config.
+- **The io_uring runtime is ~10–20% slower than the portable build** — it routes through the
+  allocating `dispatch` path and shares the `Mutex` store (no lock-free shards). The portable build
+  is the fast config today; making io_uring the fastest needs single-owner shards (ADR-002 D4).
+
+> Note: these numbers used the new **512-shard default** (raising shard count cut Mutex contention
+> substantially — an 8-core VM saw portable P64 rise ~3.7M→5.6M from the change).
 
 ---
 
