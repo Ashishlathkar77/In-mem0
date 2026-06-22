@@ -5,11 +5,13 @@ throughput, tail latency, and memory efficiency — while staying reliable.
 
 > Working name. Status: **complete working v1** — a Redis-protocol-compatible server with data
 > types, eviction, TTL, persistence, AUTH, replication, and optional TLS.
-> **Performance (honest):** on **Linux** it is a *close second to Redis* (within ~7% at high
-> pipelining) but does **not** beat it yet; it led Redis on macOS, but that advantage did not
-> generalize to Linux. The io_uring runtime is implemented but its v1 currently underperforms the
-> portable build (needs the fast-path + single-owner-shard work). Full per-platform numbers and the
-> plan to actually compete: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> **Performance (honest, measured):** on a **16-vCPU x86 server (AWS c7i.4xlarge), 100 connections**,
+> inmem **beats Redis (~2×), Valkey, KeyDB, Dragonfly, and Memcached** at real pipelining; the only
+> system that edges it is **Garnet** (ties at low/mid pipelining, wins at `-P 64`). The advantage
+> comes from the multi-threaded design and *grows with cores + connections* — at low concurrency
+> (8 cores / 40 conns) single-threaded Redis can still lead. The io_uring runtime is built and runs,
+> but its v1 trails the portable build (fast-path + single-owner-shard work pending). Full
+> per-platform numbers and methodology: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how

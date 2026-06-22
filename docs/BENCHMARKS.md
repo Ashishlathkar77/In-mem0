@@ -1,71 +1,72 @@
 # Benchmarks — honest status
 
-Reproduce with `scripts/bench-all.sh` (macOS/native) or `scripts/provision-linux.sh` (Linux VM).
-Numbers are representative single runs and vary ±10–15%. **Platform matters a lot** — results below
-are reported per-platform, and the Linux numbers are the ones to trust for production intent.
-
-Driver: `memtier_benchmark`, mixed **GET/SET 1:1**, 64-byte values, ~40 connections.
+Driver: `memtier_benchmark`, mixed **GET/SET 1:1**, 64-byte values. Numbers are representative
+single runs and vary ±10–15%. **Results depend heavily on cores and connection count** — inmem is
+multi-threaded (scales with both); Redis/Valkey are single-threaded (cap out). Both data points
+below are real and reported in full; the x86 server run is the production-representative one.
 
 ---
 
-## Linux (the result that matters) — 8-core ARM VM, kernel 6.8
+## Primary: AWS EC2 c7i.4xlarge — 16 vCPU x86, Ubuntu, kernel 6.17
 
-Native = host networking (inmem, redis, memcached). Docker = run via container (Valkey, KeyDB,
-Dragonfly, Garnet) — **these pay a Docker NAT/userland-proxy penalty, especially at `-P 1`**, so they
-are *not* directly comparable to the native rows; treat them as a rough floor, not a ceiling.
+100 connections (memtier `-t 4 -c 25`), 100k req/conn. **Docker competitors run with
+`--network host`**, so there is no NAT penalty — this is a fair cross-compare with the native rows.
 
 | system | net | `-P 1` | `-P 16` | `-P 64` |
 |---|---|--:|--:|--:|
-| **redis 7.x**       | native | **467k** | **2.93M** | **4.11M** |
-| **inmem (portable)**| native | 291k | 2.65M | 3.84M |
-| memcached           | native | 376k | 1.55M | 1.73M |
-| inmem (io_uring)    | native | 138k | 1.73M | 3.33M |
-| garnet              | docker | 128k | 1.57M | 4.01M |
-| valkey              | docker | 145k | 1.55M | 3.21M |
-| keydb               | docker | 137k | 1.42M | 2.52M |
-| dragonfly           | docker | 111k | 0.94M | 2.26M |
+| **inmem (portable)** | native | **426k** | **3.17M** | 4.68M |
+| garnet               | docker | 419k | 3.03M | **5.08M** |
+| inmem (io_uring v1)  | native | 339k | 2.55M | 4.04M |
+| dragonfly            | docker | 331k | 1.88M | 2.85M |
+| keydb                | docker | 318k | 1.34M | 1.40M |
+| redis 7.x            | native | 208k | 1.59M | 2.22M |
+| memcached            | native | 445k | 1.65M | 1.64M |
+| valkey               | docker | 194k | 1.33M | 1.84M |
 
-### Honest conclusions (Linux)
-- **inmem does NOT currently beat Redis on Linux.** redis is fastest in this test; inmem-portable is
-  a close second — within ~7% at `-P 64` and ~10% at `-P 16`, but ~38% behind at `-P 1` (the
-  latency-bound, thread-per-connection weak spot).
-- **The io_uring runtime (v1) is slower than the portable build, not faster.** Root cause: the
-  glommio handler routes every command through the allocating `dispatch` path and still shares the
-  `Mutex`-protected store across executors — it has neither the portable build's zero-copy fast path
-  (borrowed `GET`, alloc-free `SET`/`INCR`) nor single-owner shards. So it adds executor overhead
-  without the lock-free win. Fixing this is the next step (see Roadmap).
-- **Garnet is excellent** at high pipelining (4.01M at `-P 64` even through Docker). Redis and Garnet
-  set the bar to beat.
-
----
-
-## macOS — Apple Silicon (does NOT generalize to Linux)
-
-On macOS, inmem *led* at `-P 16`/`-P 64` (e.g. inmem 3.39–4.05M vs redis ~2.4–2.8M at `-P 64`).
-That advantage is **macOS-specific** — Redis's event loop is less optimized on macOS (kqueue) than on
-Linux (epoll), and our multi-threaded model benefited. **It did not hold up on Linux**, which is why
-on-platform benchmarking matters and why no production claim should rest on macOS numbers.
+### Conclusions (x86, 16 cores, 100 connections)
+- **inmem-portable beats Redis (~2×), Valkey, KeyDB, Dragonfly, and Memcached** at every pipeline
+  level that involves real batching. This is the multi-core thread-per-shard design paying off where
+  it should: many cores + many connections.
+- **Garnet is the strongest competitor** — it ties inmem at `-P 1`/`-P 16` and wins at `-P 64`
+  (5.08M vs 4.68M). Microsoft's thread-per-core .NET store is the bar to beat at extreme pipelining.
+- **Memcached** has the best single-op `-P 1` (445k) but doesn't scale with pipelining.
+- **The io_uring runtime (v1) is still ~10–20% slower than the portable build** — it routes through
+  the allocating `dispatch` path and shares the `Mutex` store, so it lacks the zero-copy fast path
+  and lock-free shards. Fixing that (below) should make it the fastest config.
 
 ---
 
-## What this means / roadmap to actually compete with Redis & Garnet
+## Secondary: ARM lima VM — 8 vCPU, 40 connections (lower concurrency)
 
-The portable build is already a close second to Redis on Linux. To pull even and ahead:
+Here Redis *led* (P1 467k / P16 2.93M / P64 4.11M) and inmem-portable was a close 2nd
+(291k / 2.65M / 3.84M). The flip vs the x86 run is explained by concurrency: at only 8 cores and
+40 connections, single-threaded Redis keeps up; at 16 cores / 100 connections it's the bottleneck.
+**Takeaway: inmem's lead widens with cores and connections, and narrows (or reverses) at low
+concurrency.** Don't read either run as the whole story — state the conditions.
 
-1. **Give the io_uring runtime the fast path.** Port `conn::serve_fast` (borrowed `GET` via
-   `Store::read_str`, alloc-free `SET`/`INCR`) into `runtime_uring::handle_conn` so it stops
-   allocating a `Reply` per request. Expected: io_uring catches and passes the portable build.
-2. **Single-owner shards (ADR-002 D4).** Split the store so each glommio executor owns its shards
-   with no `Mutex` — removes the per-op lock that caps multi-core scaling. This is the real
-   thread-per-core win and the path to beating Redis at `-P 1`.
-3. **SwissTable-SIMD → dashtable index** for memory + probe-speed.
-4. Re-benchmark on **bare-metal x86 Linux** (not an ARM VM) with `--hdr-file-prefix` for honest
-   p50/p99/p99.9, and run all competitors on host networking (not Docker) for a fair cross-compare.
+(macOS runs showed inmem leading at high pipelining too, but macOS is not a production target and
+Redis's kqueue path is weaker there, so those numbers aren't load-bearing.)
+
+---
+
+## Caveats
+- Single runs, ±10–15% variance; `redis-server`/competitor versions are distro/Docker `:latest`.
+- The ARM and x86 runs used different connection counts (40 vs 100) and arch, so they are not
+  directly comparable to each other — each is internally consistent.
+- For publication-grade numbers: bare-metal x86, pinned cores, multiple trials, and
+  `memtier --hdr-file-prefix` for p50/p99/p99.9 (coordinated-omission aware).
+
+## Roadmap to also beat Garnet
+1. **Give the io_uring runtime the fast path** (borrowed `GET`, alloc-free `SET`/`INCR`) so it stops
+   allocating a `Reply` per request — should lift it above the portable build.
+2. **Single-owner shards** (ADR-002 D4): drop the per-op `Mutex` so each io_uring executor owns its
+   shards lock-free — the real thread-per-core win, and the path past Garnet at `-P 64`.
+3. **SwissTable-SIMD → dashtable index** for memory + probe speed.
 
 ## Reproduce
 ```bash
-# Linux (free VM): see scripts/provision-linux.sh and the runbook in the README
+# x86 EC2 (or any Linux box): copy the repo + scripts/provision-linux.sh and run it,
+# or replicate the run script used here (apt deps, build portable + --features io-uring,
+# memtier across native + `docker run --network host` competitors).
 bash scripts/provision-linux.sh
-# macOS:
-scripts/bench-all.sh 1000000 50
 ```
