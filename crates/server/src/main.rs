@@ -32,7 +32,17 @@ fn main() {
     };
 
     server.start_reaper();
-    if let Err(e) = server.serve() {
+    server.start_replication();
+
+    // On Linux with --features io-uring, use the thread-per-core io_uring runtime (ADR-002);
+    // otherwise the portable thread-per-connection server. SYNC replication is served only by
+    // the portable path, so a primary that needs replicas should run the portable build.
+    #[cfg(all(target_os = "linux", feature = "io-uring"))]
+    let result = inmem_server::runtime_uring::serve(server);
+    #[cfg(not(all(target_os = "linux", feature = "io-uring")))]
+    let result = server.serve();
+
+    if let Err(e) = result {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }

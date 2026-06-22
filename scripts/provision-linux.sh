@@ -41,9 +41,17 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "   (log out/in for docker group to take effect, or run docker with sudo)"
 fi
 
-echo "==> building inmem (release)"
+echo "==> building inmem (release, portable)"
 cargo build --release
-# Once ADR-002 lands, also: cargo build --release --features io-uring
+
+echo "==> building the io_uring runtime (Linux, ADR-002) — needs liburing"
+sudo apt-get install -y liburing-dev || true
+if cargo build --release --features io-uring 2>build-iouring.log; then
+  echo "   io_uring build OK -> run it with: ./target/release/inmemd --shards \$(nproc)"
+else
+  echo "   io_uring build FAILED (see build-iouring.log) — the portable build still works."
+  echo "   Paste build-iouring.log back to fix glommio API mismatches."
+fi
 
 echo "==> running the multi-framework benchmark"
 ./scripts/bench-all.sh "${1:-200000}" "${2:-50}" "${3:-4}"

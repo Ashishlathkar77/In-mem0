@@ -1,6 +1,11 @@
 # ADR-002 — io_uring thread-per-core runtime (Linux)
 
-Status: **Designed, not yet built** · Date: 2026-06-21 · Supersedes the networking half of ADR-001 D3/D4
+Status: **Implemented (Linux), pending on-host validation** · Date: 2026-06-21 · Supersedes the networking half of ADR-001 D3/D4
+
+> Implemented in [`crates/server/src/runtime_uring.rs`](../../crates/server/src/runtime_uring.rs)
+> behind `--features io-uring` (Linux-only). It could not be compiled or benchmarked on the macOS
+> dev box (no io_uring), so a GitHub Actions Linux job compile-checks it and `scripts/provision-linux.sh`
+> builds + runs it on a free Linux VM. Performance numbers will be filled in once measured there.
 
 ## Why
 

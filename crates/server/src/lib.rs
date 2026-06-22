@@ -8,6 +8,8 @@ pub mod config;
 pub mod conn;
 pub mod persistence;
 pub mod repl;
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+pub mod runtime_uring;
 pub mod server;
 #[cfg(feature = "tls")]
 pub mod tls;

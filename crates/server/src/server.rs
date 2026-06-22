@@ -122,7 +122,6 @@ impl Server {
                 ""
             },
         );
-        self.start_replication();
         self.run(listener)
     }
 

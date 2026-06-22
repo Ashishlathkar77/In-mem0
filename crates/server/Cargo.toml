@@ -26,3 +26,12 @@ rustls-pemfile = { version = "2", optional = true }
 default = []
 # Encrypted client connections via rustls. Build/run with: cargo build --features tls
 tls = ["dep:rustls", "dep:rustls-pemfile"]
+# Linux-only io_uring thread-per-core runtime (glommio). Build on Linux:
+#   cargo build --release --features io-uring
+io-uring = ["dep:glommio", "dep:futures-lite"]
+
+# io_uring deps are Linux-only; declaring them under a target table keeps macOS/Windows builds
+# clean even when the feature is requested elsewhere.
+[target.'cfg(target_os = "linux")'.dependencies]
+glommio = { version = "0.9", optional = true }
+futures-lite = { version = "2", optional = true }

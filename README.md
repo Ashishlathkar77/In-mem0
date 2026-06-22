@@ -67,9 +67,9 @@ RESP2 + RESP3, pipelining, `WRONGTYPE` errors, TTL, `maxmemory` eviction, AOF + 
 3. ✅ RESP2/3 codec + multithreaded server (full string/keyspace command set)
 4. ✅ AOF persistence + binary snapshots + benchmark harness vs Redis
 5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET (beats Redis at `-P 16`
-   and `-P 64`). Remaining: io_uring thread-per-core + single-owner shards for the latency-bound
-   `-P 1` case (designed in [ADR-002](docs/architecture/ADR-002-io-uring-thread-per-core.md);
-   needs a Linux host), then SwissTable-SIMD → dashtable index.
+   and `-P 64`); io_uring thread-per-core runtime **implemented** (`--features io-uring`, Linux —
+   [ADR-002](docs/architecture/ADR-002-io-uring-thread-per-core.md)), pending benchmarking on a
+   Linux host. Remaining: single-owner shards (drop per-op lock) + SwissTable-SIMD → dashtable index.
 6. ✅ Data types (lists/hashes/sets/sorted-sets), AUTH, async replication, optional TLS
 7. ⬜ Clustering, pub/sub, more commands (LINDEX/ZRANGEBYSCORE/…), Redis-compatible PSYNC
 

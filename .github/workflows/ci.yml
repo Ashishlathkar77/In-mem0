@@ -33,6 +33,20 @@ jobs:
       - name: Release build
         run: cargo build --release
 
+  io-uring-build:
+    name: io_uring runtime (linux compile-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install liburing
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
+      - name: Build with io_uring feature (glommio)
+        run: cargo build --features io-uring
+      - name: Clippy io_uring
+        run: cargo clippy --features io-uring
+
   bench-smoke:
     name: benchmark smoke (vs redis)
     runs-on: ubuntu-latest
