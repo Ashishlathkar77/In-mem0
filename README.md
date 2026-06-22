@@ -3,12 +3,13 @@
 An open-source in-memory cache / key-value store, built in Rust, designed to beat Redis on
 throughput, tail latency, and memory efficiency — while staying reliable.
 
-> Working name. Status: **complete working v1** — a Redis-protocol-compatible server with
-> eviction, TTL, and persistence. **Fastest of every cache benchmarked (Redis, Valkey, KeyDB,
-> Memcached) at `-P 16` and `-P 64`** — at `-P 64`, 1.68× Redis and 2.1–2.2× KeyDB/Valkey.
-> Redis/Valkey still win the latency-bound `-P 1` case (the io_uring work targets that), and
-> Dragonfly/Garnet aren't measured yet (Linux/.NET — Docker matrix provided). Honest numbers:
-> [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> Working name. Status: **complete working v1** — a Redis-protocol-compatible server with data
+> types, eviction, TTL, persistence, AUTH, replication, and optional TLS.
+> **Performance (honest):** on **Linux** it is a *close second to Redis* (within ~7% at high
+> pipelining) but does **not** beat it yet; it led Redis on macOS, but that advantage did not
+> generalize to Linux. The io_uring runtime is implemented but its v1 currently underperforms the
+> portable build (needs the fast-path + single-owner-shard work). Full per-platform numbers and the
+> plan to actually compete: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how
@@ -66,10 +67,11 @@ RESP2 + RESP3, pipelining, `WRONGTYPE` errors, TTL, `maxmemory` eviction, AOF + 
 2. ✅ S3-FIFO eviction + capacity-bounded store + TTL
 3. ✅ RESP2/3 codec + multithreaded server (full string/keyspace command set)
 4. ✅ AOF persistence + binary snapshots + benchmark harness vs Redis
-5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET (beats Redis at `-P 16`
-   and `-P 64`); io_uring thread-per-core runtime **implemented** (`--features io-uring`, Linux —
-   [ADR-002](docs/architecture/ADR-002-io-uring-thread-per-core.md)), pending benchmarking on a
-   Linux host. Remaining: single-owner shards (drop per-op lock) + SwissTable-SIMD → dashtable index.
+5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET; io_uring runtime built &
+   benchmarked on Linux. Honest status: close 2nd to Redis on Linux, not ahead yet; io_uring v1
+   underperforms the portable build. Next: give the io_uring path the fast path + single-owner
+   shards (drop per-op lock), then SwissTable-SIMD → dashtable index. See
+   [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and [ADR-002](docs/architecture/ADR-002-io-uring-thread-per-core.md).
 6. ✅ Data types (lists/hashes/sets/sorted-sets), AUTH, async replication, optional TLS
 7. ⬜ Clustering, pub/sub, more commands (LINDEX/ZRANGEBYSCORE/…), Redis-compatible PSYNC
 
