@@ -27,15 +27,17 @@ pub struct Config {
     pub snapshot_file: String,
 }
 
+/// Default store partition count. The store is sharded for concurrency, not pinned to core count
+/// — more shards means lower lock contention among concurrent connections (benchmarks show a
+/// large throughput gain going from ~16 to a few hundred shards). Shards are cheap when empty.
+pub const DEFAULT_SHARDS: usize = 512;
+
 impl Default for Config {
     fn default() -> Self {
-        let shards = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
         Config {
             bind: "127.0.0.1".into(),
             port: 6380, // not 6379, to avoid clashing with a local Redis
-            shards,
+            shards: DEFAULT_SHARDS,
             maxmemory: 0,
             appendonly: false,
             requirepass: None,
@@ -144,7 +146,7 @@ USAGE:
 OPTIONS:
   --port <N>             listen port (default 6380)
   --bind <ADDR>          bind address (default 127.0.0.1)
-  --shards <N>           number of store shards (default: CPU count)
+  --shards <N>           number of store partitions for concurrency (default 512)
   --maxmemory <SIZE>     memory budget, e.g. 512mb, 2gb (default: unbounded)
   --appendonly <yes|no>  enable AOF persistence (default no)
   --requirepass <PASS>   require AUTH with this password (default none)

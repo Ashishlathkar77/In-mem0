@@ -25,13 +25,19 @@ use std::sync::Arc;
 const READ_CHUNK: usize = 64 * 1024;
 static CONN_IDS: AtomicU64 = AtomicU64::new(1);
 
-/// Run the io_uring server: one executor per shard, all accepting on the same port.
+/// Run the io_uring server: one pinned executor per CPU (NOT per shard — shards are store
+/// partitions, independent of executor count), all accepting on the same port via SO_REUSEPORT.
 pub fn serve(server: Arc<Server>) -> std::io::Result<()> {
-    let shards = server.config.shards.max(1);
+    let executors = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let addr = format!("{}:{}", server.config.bind, server.config.port);
-    eprintln!("inmemd (io_uring/glommio) listening on {addr} — {shards} executors");
+    eprintln!(
+        "inmemd (io_uring/glommio) listening on {addr} — {executors} executors, {} shards",
+        server.config.shards
+    );
 
-    let handles = LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(shards, None))
+    let handles = LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(executors, None))
         .on_all_shards(move || {
             let server = server.clone();
             async move {
@@ -129,9 +135,20 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
                 continue;
             }
 
-            let outcome = dispatch(&server.store, &argv, &mut st, &server.config);
-            outcome.reply.encode(&mut outbuf, st.resp3);
-            if outcome.persist {
+            // Zero-copy fast path (borrowed GET, alloc-free SET/INCR) shared with the portable
+            // server; fall back to the full dispatcher for everything else.
+            let is_write = match crate::conn::serve_fast(&server, &st, &argv, &mut outbuf) {
+                Some(w) => w,
+                None => {
+                    let outcome = dispatch(&server.store, &argv, &mut st, &server.config);
+                    outcome.reply.encode(&mut outbuf, st.resp3);
+                    if outcome.quit {
+                        quit = true;
+                    }
+                    outcome.persist
+                }
+            };
+            if is_write {
                 let mut bytes = Vec::with_capacity(32);
                 encode(&mut bytes, &argv);
                 if let Some(aof) = &server.aof {
@@ -141,9 +158,6 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
                     }
                 }
                 server.repl.propagate(&bytes);
-            }
-            if outcome.quit {
-                quit = true;
             }
             if quit {
                 break;

@@ -197,7 +197,8 @@ fn is_preauth_ok(name_upper: &[u8]) -> bool {
 
 /// Try to serve on the zero-copy fast path. `Some(is_write)` if handled (reply already written);
 /// `None` to fall back to [`dispatch`]. Does not handle AOF/replication — the caller does.
-fn serve_fast(
+/// Shared with the io_uring runtime so both transports get the borrowed-GET / alloc-free path.
+pub(crate) fn serve_fast(
     server: &Arc<Server>,
     st: &ConnState,
     argv: &[&[u8]],
