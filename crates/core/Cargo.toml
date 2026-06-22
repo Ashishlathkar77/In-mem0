@@ -9,6 +9,10 @@ description = "Embeddable in-memory cache core: flat hash index + eviction + val
 
 [dependencies]
 ahash.workspace = true
+# Spin-based mutex: in the thread-per-core io_uring runtime a std::Mutex park would stall the
+# whole core's event loop on contention; parking_lot spins briefly instead (short critical
+# sections), avoiding that stall. Uncontended cost is comparable to std.
+parking_lot = "0.12"
 
 [features]
 default = []

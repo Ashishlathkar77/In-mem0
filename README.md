@@ -5,13 +5,12 @@ throughput, tail latency, and memory efficiency — while staying reliable.
 
 > Working name. Status: **complete working v1** — a Redis-protocol-compatible server with data
 > types, eviction, TTL, persistence, AUTH, replication, and optional TLS.
-> **Performance (honest, measured on AWS c7i.4xlarge, 16 vCPU x86):** inmem **beats Redis (~2×),
-> Valkey, KeyDB, Dragonfly, and Memcached** across pipeline depths. Against **Garnet** (the other
-> top performer) it's a **statistical tie at extreme pipelining** (`-P 64`: both ~7–9M ops/sec,
-> within run-to-run noise) and ahead at `-P 1`/`-P 16`. The advantage grows with cores + connections
-> (single-threaded Redis caps out; at 8 cores / low concurrency it can still lead). The io_uring
-> runtime builds & runs but its v1 trails the portable build (single-owner-shard work pending).
-> Full per-platform numbers + methodology + caveats: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> **Performance (honest, measured on a two-machine AWS c7i.4xlarge rig):** inmem is a strong **#2**
+> — it beats **Redis (~4× at `-P 64`), Memcached, Valkey, KeyDB, and Dragonfly** — but **Garnet is
+> faster** (~1.3× at `-P 16`, ~1.5× at `-P 64`) and remains the system to beat. (Earlier "tie with
+> Garnet"/"beats everyone" readings were colocated-client measurement artifacts; the two-machine rig
+> is authoritative.) The io_uring runtime now matches the portable build after a spin-lock fix.
+> Full numbers, methodology, and what it would take to beat Garnet: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how

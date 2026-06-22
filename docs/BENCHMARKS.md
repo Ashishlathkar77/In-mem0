@@ -1,9 +1,43 @@
 # Benchmarks — honest status
 
-Driver: `memtier_benchmark`, mixed **GET/SET 1:1**, 64-byte values. Numbers are representative
-single runs and vary ±10–15%. **Results depend heavily on cores and connection count** — inmem is
-multi-threaded (scales with both); Redis/Valkey are single-threaded (cap out). Both data points
-below are real and reported in full; the x86 server run is the production-representative one.
+Driver: `memtier_benchmark`, mixed **GET/SET 1:1**, 64-byte values. The authoritative numbers are
+from a **two-machine setup** (load generator on a *separate* box) — colocating the client with the
+servers caps throughput and hides real differences (it made inmem look tied with Garnet when it
+isn't). Single-machine numbers below are kept only as a cautionary record.
+
+---
+
+## AUTHORITATIVE: two-machine, AWS c7i.4xlarge ×2 (16 vCPU x86 each)
+
+Dedicated 16-vCPU client → server over the private network. memtier `-t 16 -c 16` (256 conns),
+100k req/conn. Docker competitors on `--network host`. ops/sec, higher is better.
+
+| system | `-P 1` | `-P 16` | `-P 64` |
+|---|--:|--:|--:|
+| **garnet**          | 1.02M | **10.3M** | **15.3M** |
+| inmem (portable)    | 1.04M | 7.76M | 9.78M |
+| inmem (io_uring)    | 1.02M | 8.26M | 9.66M |
+| redis 7.x           | 263k  | 1.66M | 2.33M |
+| memcached           | 1.03M | 1.33M | 1.32M |
+
+### Honest verdict
+- **inmem does NOT beat Garnet.** Measured cleanly, Garnet is ~1.3× faster at `-P 16` and ~1.5×
+  faster at `-P 64`. Garnet's highly-tuned thread-per-core network/storage layer is genuinely ahead;
+  beating it is an open, hard problem — not achieved here.
+- **inmem is a strong #2.** It beats Redis ~4× at `-P 64`, Memcached ~7× at `-P 16`/`-P 64`, and
+  (earlier runs) Valkey/KeyDB/Dragonfly. At `-P 1` everything clusters ~1M (cross-machine round-trip
+  bound).
+- **The `parking_lot` spin-lock fixed the io_uring runtime**: it now matches the portable build
+  (8.26M vs 7.76M at `-P 16`), where before it trailed (std `Mutex` parking stalled executor cores).
+  Neither config beats Garnet, though.
+- **Lesson:** the earlier "tie with Garnet" and the macOS "beats everyone" were measurement
+  artifacts (colocated client / weak macOS event loop). Trust the two-machine rig.
+
+### What it would take to beat Garnet (honest, hard)
+Not a quick tweak. Garnet leads by ~1.5×, which points to deeper work: single-owner lock-free
+shards (no per-op atomic at all), a custom batched network layer (Garnet's is heavily optimized),
+SIMD/cache-optimal index (SwissTable→dashtable), and careful pipeline batching. Multi-week effort
+with uncertain payoff against a mature research system.
 
 ---
 

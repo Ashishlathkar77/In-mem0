@@ -8,8 +8,8 @@
 
 use crate::map::FlatMap;
 use crate::s3fifo::S3Fifo;
+use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Approximate fixed per-entry bookkeeping overhead, used for `maxmemory` accounting.
@@ -308,9 +308,9 @@ impl Store {
     }
 
     #[inline]
-    fn shard(&self, key: &[u8]) -> std::sync::MutexGuard<'_, Shard> {
+    fn shard(&self, key: &[u8]) -> parking_lot::MutexGuard<'_, Shard> {
         let h = self.router.hash_one(key);
-        self.shards[(h & self.mask) as usize].lock().unwrap()
+        self.shards[(h & self.mask) as usize].lock()
     }
 
     pub fn shard_count(&self) -> usize {
@@ -738,15 +738,12 @@ impl Store {
     }
 
     pub fn dbsize(&self) -> usize {
-        self.shards
-            .iter()
-            .map(|s| s.lock().unwrap().pol.len())
-            .sum()
+        self.shards.iter().map(|s| s.lock().pol.len()).sum()
     }
 
     pub fn flush_all(&self) {
         for s in &self.shards {
-            let mut s = s.lock().unwrap();
+            let mut s = s.lock();
             *s = Shard::new(s.budget);
         }
     }
@@ -755,7 +752,7 @@ impl Store {
         let now = now_ms();
         let mut removed = 0;
         for s in &self.shards {
-            let mut s = s.lock().unwrap();
+            let mut s = s.lock();
             let expired: Vec<Box<[u8]>> = s
                 .map
                 .iter()
@@ -776,7 +773,7 @@ impl Store {
         let now = now_ms();
         let mut out = Vec::new();
         for s in &self.shards {
-            let s = s.lock().unwrap();
+            let s = s.lock();
             for (k, e) in s.map.iter() {
                 if matches!(e.expire_at, Some(t) if t <= now) {
                     continue;
@@ -793,7 +790,7 @@ impl Store {
         let now = now_ms();
         let mut out = Vec::new();
         for s in &self.shards {
-            let s = s.lock().unwrap();
+            let s = s.lock();
             for (k, e) in s.map.iter() {
                 if matches!(e.expire_at, Some(t) if t <= now) {
                     continue;
