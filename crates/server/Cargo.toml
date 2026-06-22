@@ -19,6 +19,9 @@ path = "src/main.rs"
 inmem-core.workspace = true
 inmem-proto.workspace = true
 mimalloc = { version = "0.1", default-features = false }
+# Inline storage for the per-command argument vector — avoids a heap allocation per command on the
+# hot path for the typical case (<= 16 args). Research item #2 (zero per-command allocation).
+smallvec = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-pemfile = { version = "2", optional = true }
 

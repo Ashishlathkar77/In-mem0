@@ -376,6 +376,7 @@ dependencies = [
  "mimalloc",
  "rustls",
  "rustls-pemfile",
+ "smallvec",
 ]
 
 [[package]]

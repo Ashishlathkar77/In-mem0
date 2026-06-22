@@ -91,7 +91,7 @@ fn run<S: Read + Write>(
             if ranges.is_empty() {
                 continue;
             }
-            let argv: Vec<&[u8]> = ranges
+            let argv: smallvec::SmallVec<[&[u8]; 16]> = ranges
                 .iter()
                 .map(|&(o, l)| &inbuf[base + o..base + o + l])
                 .collect();
