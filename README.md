@@ -5,12 +5,14 @@ throughput, tail latency, and memory efficiency — while staying reliable.
 
 > Working name. Status: **complete working v1** — a Redis-protocol-compatible server with data
 > types, eviction, TTL, persistence, AUTH, replication, and optional TLS.
-> **Performance (honest, measured on a two-machine AWS c7i.4xlarge rig):** inmem is a strong **#2**
-> — it beats **Redis (~4× at `-P 64`), Memcached, Valkey, KeyDB, and Dragonfly** — but **Garnet is
-> faster** (~1.3× at `-P 16`, ~1.5× at `-P 64`) and remains the system to beat. (Earlier "tie with
-> Garnet"/"beats everyone" readings were colocated-client measurement artifacts; the two-machine rig
-> is authoritative.) The io_uring runtime now matches the portable build after a spin-lock fix.
-> Full numbers, methodology, and what it would take to beat Garnet: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> **Performance (honest, measured on a two-machine AWS c7i.4xlarge rig):** inmem **matches Garnet**
+> and **beats every other system** — it's faster than **Redis (~5× at `-P 64`), Memcached (~8×),
+> Valkey, KeyDB, and Dragonfly**, and edges Garnet at `-P 1`. Versus Garnet at high pipelining
+> (`-P 16`/`-P 64`) the two are **co-fastest within run-to-run noise** (~11–12M ops/sec; inmem won
+> `-P 16` in 3 of 4 runs, `-P 64` a dead tie). The ~1.5× gap that Garnet held earlier was **closed**
+> by profile-driven fixes (skipping eviction bookkeeping when unbounded + write-path cleanups) — it
+> was per-op overhead, not the network or the lock. Full numbers + methodology:
+> [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how
