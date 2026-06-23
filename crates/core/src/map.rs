@@ -101,12 +101,24 @@ impl<V> FlatMap<V> {
         (self.slots.len() / LOAD_DEN) * LOAD_NUM
     }
 
+    /// Compute the hash for a key (callers can cache it and pass it to the `*_pre` variants to
+    /// avoid hashing twice — e.g. once for shard routing and once for the bucket).
+    #[inline]
+    pub fn hash_key(&self, key: &[u8]) -> u64 {
+        self.hash(key)
+    }
+
     /// Look up a value by key.
+    #[inline]
     pub fn get(&self, key: &[u8]) -> Option<&V> {
+        self.get_pre(self.hash(key), key)
+    }
+
+    /// Look up a value by key using a precomputed hash (hot path).
+    pub fn get_pre(&self, hash: u64, key: &[u8]) -> Option<&V> {
         if self.slots.is_empty() {
             return None;
         }
-        let hash = self.hash(key);
         let mut i = (hash as usize) & self.mask;
         loop {
             match &self.slots[i] {
@@ -118,11 +130,16 @@ impl<V> FlatMap<V> {
     }
 
     /// Mutable lookup.
+    #[inline]
     pub fn get_mut(&mut self, key: &[u8]) -> Option<&mut V> {
+        self.get_mut_pre(self.hash(key), key)
+    }
+
+    /// Mutable lookup using a precomputed hash (hot path).
+    pub fn get_mut_pre(&mut self, hash: u64, key: &[u8]) -> Option<&mut V> {
         if self.slots.is_empty() {
             return None;
         }
-        let hash = self.hash(key);
         let mut i = (hash as usize) & self.mask;
         loop {
             match &self.slots[i] {
@@ -141,14 +158,19 @@ impl<V> FlatMap<V> {
     }
 
     /// Insert or overwrite. Returns the previous value if the key existed.
+    #[inline]
     pub fn insert(&mut self, key: &[u8], value: V) -> Option<V> {
+        self.insert_pre(self.hash(key), key, value)
+    }
+
+    /// Insert/overwrite using a precomputed hash (hot path).
+    pub fn insert_pre(&mut self, hash: u64, key: &[u8], value: V) -> Option<V> {
         if self.slots.is_empty() {
             self.alloc(MIN_CAP);
         } else if self.len >= self.grow_threshold() {
             self.grow();
         }
 
-        let hash = self.hash(key);
         let mut i = (hash as usize) & self.mask;
         loop {
             match &mut self.slots[i] {
@@ -170,11 +192,16 @@ impl<V> FlatMap<V> {
     }
 
     /// Remove a key, returning its value if present.
+    #[inline]
     pub fn remove(&mut self, key: &[u8]) -> Option<V> {
+        self.remove_pre(self.hash(key), key)
+    }
+
+    /// Remove using a precomputed hash (hot path).
+    pub fn remove_pre(&mut self, hash: u64, key: &[u8]) -> Option<V> {
         if self.slots.is_empty() {
             return None;
         }
-        let hash = self.hash(key);
         let mut i = (hash as usize) & self.mask;
         loop {
             match &self.slots[i] {

@@ -200,10 +200,22 @@ impl Shard {
     fn drop_key(&mut self, key: &[u8]) -> bool {
         if let Some(e) = self.map.remove(key) {
             self.bytes -= key_overhead(key.len()) + e.value.bytes();
-            self.pol.remove(key);
+            if self.budget != 0 {
+                self.pol.remove(key);
+            }
             true
         } else {
             false
+        }
+    }
+
+    /// Record an access for eviction ordering — only meaningful when a memory budget is set.
+    /// When unbounded (`budget == 0`) the S3-FIFO policy is never consulted, so we skip all of
+    /// its bookkeeping (and its hashing) on the hot path entirely.
+    #[inline]
+    fn touch(&mut self, key: &[u8]) {
+        if self.budget != 0 {
+            self.pol.touch(key);
         }
     }
 
@@ -239,7 +251,9 @@ impl Shard {
     fn put_new(&mut self, key: &[u8], value: Value, expire_at: Option<u64>) {
         self.bytes += key_overhead(key.len()) + value.bytes();
         self.map.insert(key, Entry { value, expire_at });
-        self.pol.insert(key);
+        if self.budget != 0 {
+            self.pol.insert(key);
+        }
     }
 }
 
@@ -274,7 +288,7 @@ macro_rules! with_collection {
             // Recompute footprint delta for this key and reconcile + maybe evict.
             let after = s.map.get($key).map(|e| e.value.bytes()).unwrap_or(0);
             s.bytes = s.bytes + after - before;
-            s.pol.touch($key);
+            s.touch($key);
             // If the collection became empty, delete the key (Redis semantics).
             let empty = match s.map.get($key).map(|e| &e.value) {
                 Some(Value::$variant(c)) => collection_is_empty_helper(c),
@@ -326,7 +340,7 @@ impl Store {
         if !s.live(key, now) {
             return Ok(None);
         }
-        s.pol.touch(key);
+        s.touch(key);
         match s.map.get(key).map(|e| &e.value) {
             Some(Value::Str(v)) => Ok(Some(v.clone())),
             Some(_) => Err(WRONGTYPE),
@@ -342,7 +356,7 @@ impl Store {
         if !s.live(key, now) {
             return f(StrRead::None);
         }
-        s.pol.touch(key);
+        s.touch(key);
         match s.map.get(key).map(|e| &e.value) {
             Some(Value::Str(v)) => f(StrRead::Str(v)),
             Some(_) => f(StrRead::WrongType),
@@ -375,7 +389,7 @@ impl Store {
                 e.value = Value::Str(value.into());
                 e.expire_at = new_expire;
             }
-            s.pol.touch(key);
+            s.touch(key);
         } else {
             s.put_new(key, Value::Str(value.into()), new_expire);
         }
@@ -742,12 +756,12 @@ impl Store {
         if !s.live(key, now) {
             return f(None);
         }
-        s.pol.touch(key);
+        s.touch(key);
         f(s.map.get(key).map(|e| &e.value))
     }
 
     pub fn dbsize(&self) -> usize {
-        self.shards.iter().map(|s| s.lock().pol.len()).sum()
+        self.shards.iter().map(|s| s.lock().map.len()).sum()
     }
 
     pub fn flush_all(&self) {
