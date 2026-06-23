@@ -26,6 +26,9 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct Replication {
     replicas: Mutex<Vec<TcpStream>>,
+    /// Lock-free replica count so the hot write path can skip command encoding/propagation
+    /// entirely when there are no replicas (the common case).
+    count: std::sync::atomic::AtomicUsize,
 }
 
 impl Replication {
@@ -33,8 +36,14 @@ impl Replication {
         Replication::default()
     }
 
+    /// Cheap (lock-free) check used on the hot path.
+    #[inline]
+    pub fn has_replicas(&self) -> bool {
+        self.count.load(std::sync::atomic::Ordering::Relaxed) > 0
+    }
+
     pub fn replica_count(&self) -> usize {
-        self.replicas.lock().unwrap().len()
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Register a replica and send it the initial snapshot atomically (under the registry lock,
@@ -43,6 +52,8 @@ impl Replication {
         let mut guard = self.replicas.lock().unwrap();
         if sock.write_all(snapshot).is_ok() {
             guard.push(sock);
+            self.count
+                .store(guard.len(), std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -53,6 +64,8 @@ impl Replication {
             return;
         }
         v.retain_mut(|s| s.write_all(bytes).is_ok());
+        self.count
+            .store(v.len(), std::sync::atomic::Ordering::Relaxed);
     }
 }
 

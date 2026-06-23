@@ -148,16 +148,18 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
                     outcome.persist
                 }
             };
-            if is_write {
-                let mut bytes = Vec::with_capacity(32);
-                encode(&mut bytes, &argv);
+            if is_write && (server.aof.is_some() || server.repl.has_replicas()) {
                 if let Some(aof) = &server.aof {
                     if let Err(e) = aof.append(&argv) {
                         write_error(&mut outbuf, &format!("ERR aof write failed: {e}"));
                         quit = true;
                     }
                 }
-                server.repl.propagate(&bytes);
+                if server.repl.has_replicas() {
+                    let mut bytes = Vec::with_capacity(32);
+                    encode(&mut bytes, &argv);
+                    server.repl.propagate(&bytes);
+                }
             }
             if quit {
                 break;

@@ -148,17 +148,20 @@ fn run<S: Read + Write>(
                 }
             };
 
-            if is_write {
-                // Durability + replication: encode once, append to AOF, fan out to replicas.
-                let mut bytes = Vec::with_capacity(32);
-                encode(&mut bytes, &argv);
+            // Durability + replication: only do the work if something actually consumes it.
+            // (Skips a per-write encode + allocation in the common no-AOF/no-replica case.)
+            if is_write && (server.aof.is_some() || server.repl.has_replicas()) {
                 if let Some(aof) = &server.aof {
                     if let Err(e) = aof.append(&argv) {
                         write_error(&mut outbuf, &format!("ERR aof write failed: {e}"));
                         quit = true;
                     }
                 }
-                server.repl.propagate(&bytes);
+                if server.repl.has_replicas() {
+                    let mut bytes = Vec::with_capacity(32);
+                    encode(&mut bytes, &argv);
+                    server.repl.propagate(&bytes);
+                }
             }
 
             if quit {

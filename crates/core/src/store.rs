@@ -367,9 +367,18 @@ impl Store {
             opts.expire_at
         };
         if existed {
-            s.drop_key(key);
+            // Update in place — avoid a remove+insert (two hash ops + two policy ops) on the
+            // hot SET path. We replace the value (of any prior type) with the new string.
+            let old_bytes = s.map.get(key).map(|e| e.value.bytes()).unwrap_or(0);
+            s.bytes = s.bytes + value.len() - old_bytes;
+            if let Some(e) = s.map.get_mut(key) {
+                e.value = Value::Str(value.into());
+                e.expire_at = new_expire;
+            }
+            s.pol.touch(key);
+        } else {
+            s.put_new(key, Value::Str(value.into()), new_expire);
         }
-        s.put_new(key, Value::Str(value.into()), new_expire);
         s.enforce_budget();
         true
     }
