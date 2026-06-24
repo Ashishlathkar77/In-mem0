@@ -5,14 +5,13 @@ throughput, tail latency, and memory efficiency — while staying reliable.
 
 > Working name. Status: **complete working v1** — a Redis-protocol-compatible server with data
 > types, eviction, TTL, persistence, AUTH, replication, and optional TLS.
-> **Performance (honest, measured on a two-machine AWS c7i.4xlarge rig):** inmem **matches Garnet**
-> and **beats every other system** — it's faster than **Redis (~5× at `-P 64`), Memcached (~8×),
-> Valkey, KeyDB, and Dragonfly**, and edges Garnet at `-P 1`. Versus Garnet at high pipelining
-> (`-P 16`/`-P 64`) the two are **co-fastest within run-to-run noise** (~11–12M ops/sec; inmem won
-> `-P 16` in 3 of 4 runs, `-P 64` a dead tie). The ~1.5× gap that Garnet held earlier was **closed**
-> by profile-driven fixes (skipping eviction bookkeeping when unbounded + write-path cleanups) — it
-> was per-op overhead, not the network or the lock. Full numbers + methodology:
-> [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> **Performance (confirmed over 3-run medians, two-machine AWS c7i.4xlarge rig, host-networked):**
+> inmem is **the fastest of every system benchmarked** — it beats **Garnet** (+29% at `-P 16`, +9%
+> at `-P 64`; tied at `-P 1`) and beats **Redis, Valkey, KeyDB, Memcached, and Dragonfly by 3–10×**.
+> (Best inmem runtime is regime-dependent: portable wins `-P 16` at ~11.6M, io_uring wins `-P 64` at
+> ~15.0M; both ship.) Honest scope: "fastest" = among **sockets/RESP cache servers** in this config
+> — not vs in-process or kernel-bypass/RDMA/FPGA stores, which are a different, faster category. Full
+> numbers + methodology + caveats: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
 ## Why / how

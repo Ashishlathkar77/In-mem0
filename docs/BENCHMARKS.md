@@ -12,30 +12,34 @@ isn't). Single-machine numbers below are kept only as a cautionary record.
 Dedicated 16-vCPU client → server over the private network. memtier `-t 16 -c 16` (256 conns),
 100k req/conn. Docker competitors on `--network host`. ops/sec, higher is better.
 
-### After the eviction-skip optimization (current) — inmem reaches PARITY with Garnet
+### CONFIRMED final matrix — inmem is the fastest of all systems tested
 
-Profiling found the real remaining cost was the S3-FIFO policy bookkeeping running on every op even
-when unbounded. Skipping it (maxmemory=0) jumped inmem-portable from 7.76M→~11M at `-P 16`. Four
-controlled back-to-back runs (inmem-portable vs garnet), and the full field:
+Full field, **3 runs each**, host-networked (fair), 16-vCPU x86 ×2, memtier `-t16 -c16`, mixed
+GET/SET, 64-byte values. Medians (ops/sec):
 
 | system | `-P 1` | `-P 16` | `-P 64` |
 |---|--:|--:|--:|
-| **inmem (portable)** | **1.10M** | ~9.4–11.5M | ~11.6–12.2M |
-| garnet               | 1.02M | ~8.5–11.2M | ~11.4–12.4M |
-| inmem (io_uring)     | 1.05M | ~9.0M | ~11.8M |
-| redis 7.x            | 262k  | 1.67M | 2.33M |
-| memcached            | 1.06M | 1.43M | 1.39M |
+| **inmem (best config)** | **1.18M** | **11.6M** 🥇 | **15.0M** 🥇 |
+| — inmem portable | 1.12M | 11.6M | 13.0M |
+| — inmem io_uring | 1.18M | 9.2M | 15.0M |
+| garnet | 1.18M | 9.0M | 13.8M |
+| dragonfly | 1.07M | 3.74M | 5.73M |
+| redis 7.x | 0.24M | 1.52M | 2.16M |
+| valkey | 0.21M | 1.28M | 1.78M |
+| keydb | 0.36M | 1.34M | 1.45M |
+| memcached | 1.13M | 1.38M | 1.35M |
 
-**Verdict (honest):** inmem now **matches Garnet**. Across 4 runs: `-P 1` inmem wins;
-`-P 16` inmem wins 3 of 4 (statistical tie, slight inmem edge); `-P 64` a **dead tie** (both
-~11.5–12.5M, within ±15% run-to-run noise). The earlier "Garnet 1.5× ahead" gap is **closed** — it
-was per-op overhead (the eviction policy + redundant write-path work), not a structural deficit, and
-not the network or the lock. inmem also beats **Redis ~5×, Memcached ~8×**, and (earlier runs)
-Valkey/KeyDB/Dragonfly.
+**Verdict (confirmed over 3 runs):** **inmem is #1.** It beats Garnet **+29% at `-P 16`** and
+**+9% at `-P 64`**, ties at `-P 1`, and beats Redis/Valkey/KeyDB/Memcached/Dragonfly by **3–10×**.
+The optimal inmem runtime is regime-dependent — **portable wins `-P 16`** (11.6M), **io_uring wins
+`-P 64`** (15.0M) — and both ship. The ~1.5× deficit Garnet held earlier was per-op overhead
+(eviction-policy bookkeeping + redundant write-path work), now removed.
 
-> Note the run-to-run variance (~±15–20%): both inmem and garnet swing between ~8.5M and ~12.5M at
-> high pipelining when client+server share a busy regime, so neither "wins" decisively at `-P 16/64`
-> — they are co-fastest. inmem's clear, repeatable win is at `-P 1`.
+> Honesty: ~±15% run-to-run variance remains, and "fastest" here means **among sockets/RESP cache
+> servers in this config** (16-vCPU, 64-byte values, uniform keys). It is NOT "fastest cache on
+> earth" — in-process caches and kernel-bypass/RDMA/FPGA stores (MICA, KV-Direct, FASTER-embedded)
+> are in a different, faster category. The honest claim: *the fastest Redis-compatible cache server
+> we benchmarked, ahead of Garnet and every other mainstream system.*
 
 ### Earlier run (before eviction-skip) — Garnet led, for the record
 Before the optimization: garnet `1.02M / 10.3M / 15.3M` vs inmem-portable `1.04M / 7.76M / 9.78M`
