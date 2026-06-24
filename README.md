@@ -31,8 +31,15 @@ curl -fsSL https://raw.githubusercontent.com/Ashishlathkar77/In-mem0/main/instal
 inmemd --port 6380
 ```
 
-**Rust users:** `cargo install inmem-server` then `inmemd --port 6380`.
-**From source:** `cargo build --release && ./target/release/inmemd --port 6380`.
+**Windows:** use Docker Desktop (the `docker run` above), or download `inmemd-windows-x86_64.exe`
+from the [latest release](https://github.com/Ashishlathkar77/In-mem0/releases/latest) and run
+`inmemd.exe --port 6380`, or build with `cargo build --release`.
+
+**Rust users (any OS):** `cargo install inmem-server` then `inmemd --port 6380`.
+**From source (any OS):** `cargo build --release && ./target/release/inmemd --port 6380`.
+
+> Runs on **Linux, macOS, and Windows** (x86_64 + arm64). The default server is fully cross-platform;
+> the optional io_uring runtime (`--features io-uring`) is Linux-only.
 
 **Use it from your app** — same code as Redis, just the address:
 ```python
