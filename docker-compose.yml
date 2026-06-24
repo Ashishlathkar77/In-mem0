@@ -1,0 +1,11 @@
+# Run inmem with: docker compose up -d
+# Then connect with any Redis client at localhost:6380 (e.g. redis-cli -p 6380 ping).
+services:
+  inmem:
+    image: ghcr.io/ashishlathkar77/inmem:latest
+    # Or build locally instead of pulling:
+    # build: .
+    ports:
+      - "6380:6380"
+    command: ["--bind", "0.0.0.0", "--port", "6380", "--maxmemory", "512mb"]
+    restart: unless-stopped

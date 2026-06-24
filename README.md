@@ -14,6 +14,45 @@ throughput, tail latency, and memory efficiency — while staying reliable.
 > numbers + methodology + caveats: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 > Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
 
+## Install & use (it's a drop-in Redis replacement — no Redis required)
+
+inmem is a standalone server (`inmemd`) that speaks the Redis wire protocol (RESP2/3). You do **not**
+need Redis installed — point your existing Redis client at inmem's port and it just works.
+
+**Docker (easiest):**
+```bash
+docker run -d --name inmem -p 6380:6380 ghcr.io/ashishlathkar77/inmem:latest
+redis-cli -p 6380 ping          # → PONG
+```
+
+**One-line install (prebuilt binary, Linux/macOS, x86_64/arm64):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ashishlathkar77/In-mem0/main/install.sh | sh
+inmemd --port 6380
+```
+
+**Rust users:** `cargo install inmem-server` then `inmemd --port 6380`.
+**From source:** `cargo build --release && ./target/release/inmemd --port 6380`.
+
+**Use it from your app** — same code as Redis, just the address:
+```python
+import redis                         # pip install redis
+r = redis.Redis(host="localhost", port=6380)
+r.set("user:1", "alice"); print(r.get("user:1"))
+r.lpush("q", "a", "b"); r.hset("h", "f", "v"); r.zadd("z", {"m": 1.5})
+```
+```javascript
+import Redis from "ioredis";         // npm i ioredis
+const r = new Redis(6380, "localhost");
+await r.set("k", "v"); console.log(await r.get("k"));
+```
+```go
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6380"}) // go-redis
+rdb.Set(ctx, "k", "v", 0)
+```
+Works with `redis-cli`, `redis-benchmark`, and any RESP client in any language. To **embed** inmem
+in a Rust app (no server, in-process), depend on the `inmem-core` crate.
+
 ## Why / how
 
 Design is grounded in a fact-checked survey of the fastest existing systems and the relevant
