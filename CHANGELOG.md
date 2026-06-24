@@ -4,7 +4,15 @@ All notable changes to this project are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project uses [SemVer](https://semver.org/)
 (pre-1.0: minor = features, patch = fixes).
 
-## [Unreleased]
+## [0.1.1] — 2026-06-24
+### Added
+- Native **Windows** (`x86_64`) prebuilt binary; CI now builds/tests on Windows too.
+  inmem now ships native binaries for Linux (x86_64/aarch64), macOS (x86_64/aarch64), and Windows.
+
+## [0.1.0] — 2026-06-24
+
+First public release. Standalone Redis-compatible (RESP2/3) cache server + embeddable core.
+Distributed as a multi-arch Docker image (GHCR) and prebuilt binaries.
 
 ### Added
 - **Embeddable core** (`inmem-core`): flat open-addressing hash index with tombstone-free

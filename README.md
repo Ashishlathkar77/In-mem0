@@ -1,128 +1,267 @@
+<div align="center">
+
 # inmem
 
-An open-source in-memory cache / key-value store, built in Rust, designed to beat Redis on
-throughput, tail latency, and memory efficiency — while staying reliable.
+**A fast, Redis-compatible in-memory cache server — written in Rust.**
 
-> Working name. Status: **complete working v1** — a Redis-protocol-compatible server with data
-> types, eviction, TTL, persistence, AUTH, replication, and optional TLS.
-> **Performance (confirmed over 3-run medians, two-machine AWS c7i.4xlarge rig, host-networked):**
-> inmem is **the fastest of every system benchmarked** — it beats **Garnet** (+29% at `-P 16`, +9%
-> at `-P 64`; tied at `-P 1`) and beats **Redis, Valkey, KeyDB, Memcached, and Dragonfly by 3–10×**.
-> (Best inmem runtime is regime-dependent: portable wins `-P 16` at ~11.6M, io_uring wins `-P 64` at
-> ~15.0M; both ship.) Honest scope: "fastest" = among **sockets/RESP cache servers** in this config
-> — not vs in-process or kernel-bypass/RDMA/FPGA stores, which are a different, faster category. Full
-> numbers + methodology + caveats: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-> Architecture: [docs/architecture/ADR-001-foundations.md](docs/architecture/ADR-001-foundations.md).
+Drop-in for Redis (RESP2/3 wire protocol): point your existing Redis client at inmem and it just
+works. No Redis required — inmem *is* the server.
 
-## Install & use (it's a drop-in Redis replacement — no Redis required)
+[![CI](https://github.com/Ashishlathkar77/In-mem0/actions/workflows/ci.yml/badge.svg)](https://github.com/Ashishlathkar77/In-mem0/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Ashishlathkar77/In-mem0?sort=semver)](https://github.com/Ashishlathkar77/In-mem0/releases/latest)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Container: GHCR](https://img.shields.io/badge/container-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/Ashishlathkar77/In-mem0/pkgs/container/inmem)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-informational)
 
-inmem is a standalone server (`inmemd`) that speaks the Redis wire protocol (RESP2/3). You do **not**
-need Redis installed — point your existing Redis client at inmem's port and it just works.
+</div>
 
-**Docker (easiest):**
+---
+
+## Highlights
+
+- ⚡ **Fast.** In a two-machine x86 benchmark (memtier, mixed GET/SET) inmem is the fastest of every
+  system tested — ahead of **Redis, Valkey, KeyDB, Memcached, Dragonfly**, and matching/beating
+  **Garnet**. See [Benchmarks](#benchmarks) (with honest caveats).
+- 🔌 **Drop-in for Redis.** Speaks RESP2 & RESP3 — use your existing Redis client and tools
+  (`redis-cli`, `redis-benchmark`, redis-py, ioredis, go-redis, Lettuce, …). Just change the port.
+- 🧱 **Real data types.** Strings, lists, hashes, sets, sorted sets — with `WRONGTYPE` semantics.
+- ⏱️ **TTL & eviction.** Per-key expiry plus a `maxmemory` budget with **S3-FIFO** eviction.
+- 💾 **Durable.** Append-only file (AOF) and snapshots, replayed on startup.
+- 🔁 **Replication.** Async primary → read-only replicas (`--replicaof`).
+- 🔐 **Secure-ish.** Password auth (`--requirepass`) and optional TLS (`--features tls`).
+- 🦀 **Safe & portable.** Pure Rust; runs on Linux, macOS, and Windows (x86_64 + arm64).
+- 📦 **Embeddable.** Use the `inmem-core` crate as an in-process cache (no server, no network).
+
+> Status: **v0.1.x — early but complete and tested** (44 tests incl. fuzz + concurrency + TCP
+> e2e). API and wire compatibility are stable for the supported commands.
+
+---
+
+## Quick start
+
 ```bash
+# Docker — works on Linux, macOS, and Windows (Docker Desktop / WSL2)
 docker run -d --name inmem -p 6380:6380 ghcr.io/ashishlathkar77/inmem:latest
-redis-cli -p 6380 ping          # → PONG
+
+# Verify with the standard Redis CLI
+redis-cli -p 6380 ping        # → PONG
+redis-cli -p 6380 set hi there
+redis-cli -p 6380 get hi      # → "there"
 ```
 
-**One-line install (prebuilt binary, Linux/macOS, x86_64/arm64):**
-```bash
-curl -fsSL https://raw.githubusercontent.com/Ashishlathkar77/In-mem0/main/install.sh | sh
-inmemd --port 6380
-```
+That's it — inmem is now serving on port `6380`, speaking the Redis protocol.
 
-**Windows:** use Docker Desktop (the `docker run` above), or download `inmemd-windows-x86_64.exe`
-from the [latest release](https://github.com/Ashishlathkar77/In-mem0/releases/latest) and run
-`inmemd.exe --port 6380`, or build with `cargo build --release`.
+---
 
-**Rust users (any OS):** `cargo install inmem-server` then `inmemd --port 6380`.
-**From source (any OS):** `cargo build --release && ./target/release/inmemd --port 6380`.
+## Install
 
-> Runs on **Linux, macOS, and Windows** (x86_64 + arm64). The default server is fully cross-platform;
-> the optional io_uring runtime (`--features io-uring`) is Linux-only.
-
-**Use it from your app** — same code as Redis, just the address:
-```python
-import redis                         # pip install redis
-r = redis.Redis(host="localhost", port=6380)
-r.set("user:1", "alice"); print(r.get("user:1"))
-r.lpush("q", "a", "b"); r.hset("h", "f", "v"); r.zadd("z", {"m": 1.5})
-```
-```javascript
-import Redis from "ioredis";         // npm i ioredis
-const r = new Redis(6380, "localhost");
-await r.set("k", "v"); console.log(await r.get("k"));
-```
-```go
-rdb := redis.NewClient(&redis.Options{Addr: "localhost:6380"}) // go-redis
-rdb.Set(ctx, "k", "v", 0)
-```
-Works with `redis-cli`, `redis-benchmark`, and any RESP client in any language. To **embed** inmem
-in a Rust app (no server, in-process), depend on the `inmem-core` crate.
-
-## Why / how
-
-Design is grounded in a fact-checked survey of the fastest existing systems and the relevant
-academic literature — see [docs/research/01-landscape-and-techniques.md](docs/research/01-landscape-and-techniques.md).
-The three decisive levers, and our choices:
-
-| Lever | Choice | Source of the idea |
+| Method | Command | Platforms |
 |---|---|---|
-| Concurrency | Thread-per-core, shared-nothing (lock-free hot path) | Dragonfly, Seastar/ScyllaDB |
-| Hash index | Flat open-addressing → dashtable-style segments | Dragonfly dashtable, MemC3/libcuckoo, FASTER |
-| Eviction | Lock-free FIFO (S3-FIFO/SIEVE), baked into the index | S3-FIFO (SOSP'23), SIEVE (NSDI'24) |
-| Protocol | RESP2/3 wire-compatible (drop-in for Redis clients) | Redis, Garnet |
+| **Docker** | `docker run -d -p 6380:6380 ghcr.io/ashishlathkar77/inmem:latest` | Linux · macOS · Windows |
+| **Script** (prebuilt binary) | `curl -fsSL https://raw.githubusercontent.com/Ashishlathkar77/In-mem0/main/install.sh \| sh` | Linux · macOS |
+| **Windows binary** | Download `inmemd-windows-x86_64.exe` from [Releases](https://github.com/Ashishlathkar77/In-mem0/releases/latest), run `inmemd.exe --port 6380` | Windows |
+| **Cargo** | `cargo install inmem-server` *(once published)* / or from source below | any |
+| **Source** | `git clone … && cargo build --release && ./target/release/inmemd --port 6380` | any |
 
-## Layout
+Prebuilt binaries are published for **linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64,
+windows-x86_64** on every release.
 
+### Docker Compose
+
+```yaml
+services:
+  inmem:
+    image: ghcr.io/ashishlathkar77/inmem:latest
+    ports: ["6380:6380"]
+    command: ["--bind", "0.0.0.0", "--port", "6380", "--maxmemory", "512mb"]
 ```
-crates/core    inmem-core   embeddable cache library (hash index + eviction)
-crates/proto   inmem-proto  RESP2/3 codec
-crates/server  inmem-server thread-per-core server, binary `inmemd`
-docs/          architecture decision records + research
+
+---
+
+## Using inmem from your app
+
+Use **any Redis client** — same code you'd write for Redis, just the address. (inmem does not
+require Redis to be installed; it replaces it.)
+
+<details open><summary><b>Python</b> (<code>pip install redis</code>)</summary>
+
+```python
+import redis
+r = redis.Redis(host="localhost", port=6380)
+
+r.set("user:1", "alice")
+print(r.get("user:1"))                 # b'alice'
+r.lpush("queue", "a", "b")             # lists
+r.hset("profile", "name", "alice")     # hashes
+r.sadd("tags", "x", "y")               # sets
+r.zadd("board", {"alice": 10})         # sorted sets
+r.expire("user:1", 60)                 # TTL
+```
+</details>
+
+<details><summary><b>Node.js</b> (<code>npm i ioredis</code>)</summary>
+
+```javascript
+import Redis from "ioredis";
+const r = new Redis(6380, "localhost");
+
+await r.set("k", "v");
+console.log(await r.get("k"));
+await r.rpush("list", "a", "b");
+await r.hset("h", "f", "v");
+```
+</details>
+
+<details><summary><b>Go</b> (<code>go get github.com/redis/go-redis/v9</code>)</summary>
+
+```go
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6380"})
+rdb.Set(ctx, "k", "v", 0)
+val, _ := rdb.Get(ctx, "k").Result()
+```
+</details>
+
+<details><summary><b>Embedded</b> (Rust, no server)</summary>
+
+```toml
+# Cargo.toml
+inmem-core = "0.0"
+```
+```rust
+use inmem_core::{Store, SetOptions};
+let cache = Store::new(/*shards*/ 256, /*maxmemory bytes*/ 0);
+cache.set(b"k", b"v", SetOptions::default());
+assert_eq!(cache.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
+```
+</details>
+
+---
+
+## Supported commands
+
+| Group | Commands |
+|---|---|
+| **Connection** | `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `COMMAND` `CONFIG GET` `CLIENT` `INFO` `DBSIZE` `FLUSHALL`/`FLUSHDB` |
+| **Strings** | `SET` (`EX`/`PX`/`EXAT`/`PXAT`/`NX`/`XX`/`KEEPTTL`/`GET`) `GET` `GETSET` `SETNX` `SETEX` `PSETEX` `MSET` `MGET` `APPEND` `STRLEN` `INCR` `DECR` `INCRBY` `DECRBY` |
+| **Lists** | `LPUSH` `RPUSH` `LPOP` `RPOP` `LLEN` `LRANGE` |
+| **Hashes** | `HSET` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS` `HGETALL` `HKEYS` `HVALS` |
+| **Sets** | `SADD` `SREM` `SISMEMBER` `SCARD` `SMEMBERS` |
+| **Sorted sets** | `ZADD` `ZSCORE` `ZREM` `ZCARD` `ZRANGE` (`WITHSCORES`) |
+| **Keyspace** | `DEL` `UNLINK` `EXISTS` `TYPE` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `PERSIST` `TTL` `PTTL` `KEYS` `SCAN` |
+| **Persistence** | `SAVE` `BGSAVE` |
+
+---
+
+## Configuration
+
+```text
+inmemd [OPTIONS]
+  --port <N>             listen port (default 6380)
+  --bind <ADDR>          bind address (default 127.0.0.1; use 0.0.0.0 in containers)
+  --shards <N>           store partitions for concurrency (default 512)
+  --maxmemory <SIZE>     memory budget, e.g. 512mb, 2gb (default: unbounded)
+  --appendonly <yes|no>  enable AOF persistence (default no)
+  --requirepass <PASS>   require AUTH with this password
+  --replicaof <H:P>      run as a read-only replica of a primary
+  --masterauth <PASS>    password to authenticate to the primary
+  --tls-cert <FILE>      PEM cert chain to enable TLS (build with --features tls)
+  --tls-key <FILE>       PEM private key for TLS
+  --dir <PATH>           directory for persistence files (default .)
 ```
 
-## Build, test, run
+**Replication example:**
+```bash
+inmemd --port 6380                       # primary
+inmemd --port 6381 --replicaof 127.0.0.1:6380   # read-only replica, auto-syncs
+```
+
+---
+
+## Benchmarks
+
+Two-machine AWS `c7i.4xlarge` (16 vCPU x86) rig — dedicated load generator, server over the private
+network, `memtier_benchmark`, mixed GET/SET, 64-byte values. 3-run medians (ops/sec):
+
+| System | `-P 1` | `-P 16` | `-P 64` |
+|---|--:|--:|--:|
+| **inmem** | **1.18M** | **11.6M** | **15.0M** |
+| garnet | 1.18M | 9.0M | 13.8M |
+| dragonfly | 1.07M | 3.74M | 5.73M |
+| redis | 0.24M | 1.52M | 2.16M |
+| valkey | 0.21M | 1.28M | 1.78M |
+| keydb | 0.36M | 1.34M | 1.45M |
+| memcached | 1.13M | 1.38M | 1.35M |
+
+> **Honest scope.** "Fastest" means *among sockets/RESP cache servers in this configuration*. It is
+> **not** a claim against in-process caches or kernel-bypass/RDMA/FPGA key-value stores, which are a
+> different and faster category. There is ~±15% run-to-run variance, and the best inmem runtime is
+> regime-dependent (portable peaks at `-P 16`, the Linux io_uring build at `-P 64`). Reproduce with
+> [`scripts/bench-all.sh`](scripts/bench-all.sh). Full methodology + caveats:
+> [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+---
+
+## How it works
+
+inmem's design is grounded in a fact-checked survey of the fastest systems and the relevant
+research, and validated by profiling. Key choices:
+
+- **Sharded store**, 512 partitions, lock per shard (`parking_lot`) → low contention at high
+  concurrency. The eviction policy is bypassed entirely when unbounded (`maxmemory=0`).
+- **Flat open-addressing hash index** with tombstone-free backward-shift deletion.
+- **S3-FIFO eviction** (SOSP'23) — beats LRU/ARC on miss ratio *and* throughput.
+- **Zero-copy hot path** — borrowed `GET`, alloc-free `SET`/`INCR`, pipelined responses coalesced
+  into one write; `mimalloc` allocator.
+- **Optional Linux io_uring thread-per-core runtime** (`--features io-uring`).
+
+Deep dives: [Architecture (ADR-001)](docs/architecture/ADR-001-foundations.md) ·
+[io_uring runtime (ADR-002)](docs/architecture/ADR-002-io-uring-thread-per-core.md) ·
+[Research notes](docs/research/) · [Benchmarks](docs/BENCHMARKS.md).
+
+---
+
+## Build from source
 
 ```bash
-cargo build --release
-cargo test                       # 32 tests across core/proto/server + TCP e2e
-
-./target/release/inmemd --port 6380 --shards 8 --maxmemory 512mb
-redis-cli -p 6380 ping           # works with the standard redis client
-scripts/bench.sh                 # head-to-head vs redis-server
+git clone https://github.com/Ashishlathkar77/In-mem0.git
+cd In-mem0
+cargo build --release            # portable server → target/release/inmemd
+cargo test                       # 44 tests
+cargo build --release --features tls         # + TLS
+cargo build --release --features io-uring    # + Linux io_uring runtime
 ```
 
 Requires Rust 1.96+ (pinned in `rust-toolchain.toml`).
 
-### Supported commands
+**Project layout**
 
-- **Connection/admin**: `PING ECHO HELLO QUIT SELECT AUTH COMMAND CONFIG CLIENT INFO DBSIZE FLUSHALL/FLUSHDB SAVE BGSAVE`
-- **Strings**: `SET GET GETSET SETNX SETEX PSETEX MSET MGET APPEND STRLEN INCR DECR INCRBY DECRBY`
-- **Lists**: `LPUSH RPUSH LPOP RPOP LLEN LRANGE`
-- **Hashes**: `HSET HMSET HGET HMGET HDEL HLEN HEXISTS HGETALL HKEYS HVALS`
-- **Sets**: `SADD SREM SISMEMBER SCARD SMEMBERS`
-- **Sorted sets**: `ZADD ZSCORE ZREM ZCARD ZRANGE [WITHSCORES]`
-- **Keyspace**: `DEL UNLINK EXISTS TYPE EXPIRE PEXPIRE EXPIREAT PEXPIREAT PERSIST TTL PTTL KEYS SCAN`
+```
+crates/core    inmem-core    embeddable cache: hash index, S3-FIFO eviction, sharded store
+crates/proto   inmem-proto   RESP2/3 parser + encoder
+crates/server  inmem-server  the inmemd server, command dispatch, persistence, replication, TLS
+docs/          architecture decision records, research, benchmarks
+scripts/       benchmark + provisioning helpers
+```
 
-RESP2 + RESP3, pipelining, `WRONGTYPE` errors, TTL, `maxmemory` eviction, AOF + snapshots,
-**AUTH** (`--requirepass`), **async replication** (`--replicaof`), and optional **TLS**
-(`--features tls`, `--tls-cert/--tls-key`).
+---
 
 ## Roadmap
 
-1. ✅ Flat open-addressing hash index (correct + fuzz-tested)
-2. ✅ S3-FIFO eviction + capacity-bounded store + TTL
-3. ✅ RESP2/3 codec + multithreaded server (full string/keyspace command set)
-4. ✅ AOF persistence + binary snapshots + benchmark harness vs Redis
-5. 🟡 **Performance** — done: mimalloc, zero-copy parsing, borrowed GET; io_uring runtime built &
-   benchmarked on Linux. Honest status: close 2nd to Redis on Linux, not ahead yet; io_uring v1
-   underperforms the portable build. Next: give the io_uring path the fast path + single-owner
-   shards (drop per-op lock), then SwissTable-SIMD → dashtable index. See
-   [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and [ADR-002](docs/architecture/ADR-002-io-uring-thread-per-core.md).
-6. ✅ Data types (lists/hashes/sets/sorted-sets), AUTH, async replication, optional TLS
-7. ⬜ Clustering, pub/sub, more commands (LINDEX/ZRANGEBYSCORE/…), Redis-compatible PSYNC
+- [x] Strings/lists/hashes/sets/sorted-sets, TTL, eviction, persistence, AUTH, replication, TLS
+- [x] Cross-platform (Linux/macOS/Windows), Docker image, prebuilt binaries
+- [ ] io_uring single-owner shards (lock-free) on Linux
+- [ ] More commands (`LINDEX`, `ZRANGEBYSCORE`, `GETDEL`, …) and data-type coverage
+- [ ] Clustering, pub/sub, Redis-compatible `PSYNC`
+- [ ] `cargo install` via crates.io, Homebrew tap
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) (correctness first, tests
+required, hot path stays allocation-free). Please also read the
+[Code of Conduct](CODE_OF_CONDUCT.md). Security reports: [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache-2.0.
+[Apache-2.0](LICENSE).
