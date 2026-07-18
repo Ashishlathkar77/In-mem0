@@ -135,6 +135,7 @@ fn run<S: Read + Write>(
                 continue;
             }
 
+            server.store.note_command();
             let handled = serve_fast(server, &st, &argv, &mut outbuf);
             let is_write = match handled {
                 Some(w) => w,

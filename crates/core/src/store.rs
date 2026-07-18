@@ -10,6 +10,7 @@ use crate::map::FlatMap;
 use crate::s3fifo::S3Fifo;
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Approximate fixed per-entry bookkeeping overhead, used for `maxmemory` accounting.
@@ -185,6 +186,11 @@ struct Shard {
     pol: S3Fifo,
     bytes: usize,
     budget: usize,
+    /// Read hits/misses and eviction count for this shard. Mutated only under the shard lock, so
+    /// they add no atomics or cross-core contention on the hot path; summed lazily for `INFO`.
+    hits: u64,
+    misses: u64,
+    evicted: u64,
 }
 
 impl Shard {
@@ -194,6 +200,9 @@ impl Shard {
             pol: S3Fifo::new(),
             bytes: 0,
             budget,
+            hits: 0,
+            misses: 0,
+            evicted: 0,
         }
     }
 
@@ -240,7 +249,9 @@ impl Shard {
         while self.bytes > self.budget {
             match self.pol.evict_one() {
                 Some(victim) => {
-                    self.drop_key(&victim);
+                    if self.drop_key(&victim) {
+                        self.evicted += 1;
+                    }
                 }
                 None => break,
             }
@@ -257,11 +268,27 @@ impl Shard {
     }
 }
 
+/// Aggregate server statistics, summed across shards for `INFO`.
+#[derive(Clone, Copy, Default)]
+pub struct StoreStats {
+    /// Read commands that found a live key.
+    pub hits: u64,
+    /// Read commands that found no live key.
+    pub misses: u64,
+    /// Keys dropped by `maxmemory` eviction.
+    pub evicted: u64,
+    /// Approximate bytes of keys + values held across all shards.
+    pub used_memory: u64,
+}
+
 /// The top-level cache store.
 pub struct Store {
     shards: Vec<Mutex<Shard>>,
     mask: u64,
     router: ahash::RandomState,
+    /// Total commands processed, incremented once per served command by the server. A single
+    /// relaxed counter — the server reads it rarely (only for `INFO`).
+    commands: AtomicU64,
 }
 
 /// Get a mutable collection of the right type at `key`, creating it if absent; returns the shard
@@ -318,7 +345,32 @@ impl Store {
             shards: (0..n).map(|_| Mutex::new(Shard::new(per_shard))).collect(),
             mask: (n as u64) - 1,
             router: ahash::RandomState::with_seeds(0xa1, 0xb2, 0xc3, 0xd4),
+            commands: AtomicU64::new(0),
         }
+    }
+
+    /// Record that one command was processed (called by the server per command).
+    #[inline]
+    pub fn note_command(&self) {
+        self.commands.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Total commands processed since startup.
+    pub fn commands_processed(&self) -> u64 {
+        self.commands.load(Ordering::Relaxed)
+    }
+
+    /// Sum the per-shard hit/miss/eviction counters. Locks each shard briefly — for `INFO` only.
+    pub fn stats(&self) -> StoreStats {
+        let mut acc = StoreStats::default();
+        for s in &self.shards {
+            let s = s.lock();
+            acc.hits += s.hits;
+            acc.misses += s.misses;
+            acc.evicted += s.evicted;
+            acc.used_memory += s.bytes as u64;
+        }
+        acc
     }
 
     #[inline]
@@ -338,8 +390,10 @@ impl Store {
         let now = now_ms();
         let mut s = self.shard(key);
         if !s.live(key, now) {
+            s.misses += 1;
             return Ok(None);
         }
+        s.hits += 1;
         s.touch(key);
         match s.map.get(key).map(|e| &e.value) {
             Some(Value::Str(v)) => Ok(Some(v.clone())),
@@ -354,8 +408,10 @@ impl Store {
         let now = now_ms();
         let mut s = self.shard(key);
         if !s.live(key, now) {
+            s.misses += 1;
             return f(StrRead::None);
         }
+        s.hits += 1;
         s.touch(key);
         match s.map.get(key).map(|e| &e.value) {
             Some(Value::Str(v)) => f(StrRead::Str(v)),
@@ -754,8 +810,10 @@ impl Store {
         let now = now_ms();
         let mut s = self.shard(key);
         if !s.live(key, now) {
+            s.misses += 1;
             return f(None);
         }
+        s.hits += 1;
         s.touch(key);
         f(s.map.get(key).map(|e| &e.value))
     }
@@ -767,7 +825,12 @@ impl Store {
     pub fn flush_all(&self) {
         for s in &self.shards {
             let mut s = s.lock();
+            // Preserve the hit/miss/eviction stats: FLUSHDB clears the keyspace, not server stats.
+            let (hits, misses, evicted) = (s.hits, s.misses, s.evicted);
             *s = Shard::new(s.budget);
+            s.hits = hits;
+            s.misses = misses;
+            s.evicted = evicted;
         }
     }
 
@@ -1044,6 +1107,36 @@ mod tests {
         for verb in ["SET", "RPUSH", "HSET", "SADD", "ZADD"] {
             assert!(text.contains(verb), "dump missing {verb}");
         }
+    }
+
+    #[test]
+    fn stats_track_hits_misses_and_survive_flush() {
+        let st = Store::new(4, 0);
+        st.set(b"k", b"v", SetOptions::default());
+        st.push(b"l", &[b"a"], false).unwrap();
+        // reads: 2 hits (string + collection), 2 misses (absent key, both read paths)
+        assert_eq!(st.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
+        assert_eq!(st.llen(b"l"), Ok(1));
+        assert_eq!(st.get(b"absent").unwrap(), None);
+        assert_eq!(st.hget(b"absent", b"f").unwrap(), None);
+        let s = st.stats();
+        assert_eq!(s.hits, 2);
+        assert_eq!(s.misses, 2);
+        assert_eq!(s.evicted, 0);
+        // FLUSHDB clears keys but preserves server stats.
+        st.flush_all();
+        assert_eq!(st.dbsize(), 0);
+        let s = st.stats();
+        assert_eq!((s.hits, s.misses), (2, 2));
+    }
+
+    #[test]
+    fn stats_count_evictions() {
+        let st = Store::new(4, 64 * 200);
+        for i in 0..10_000u32 {
+            st.set(&i.to_le_bytes(), b"payloadpayload", SetOptions::default());
+        }
+        assert!(st.stats().evicted > 0, "expected evictions under budget");
     }
 
     #[test]

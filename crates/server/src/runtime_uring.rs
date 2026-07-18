@@ -137,6 +137,7 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
 
             // Zero-copy fast path (borrowed GET, alloc-free SET/INCR) shared with the portable
             // server; fall back to the full dispatcher for everything else.
+            server.store.note_command();
             let is_write = match crate::conn::serve_fast(&server, &st, &argv, &mut outbuf) {
                 Some(w) => w,
                 None => {

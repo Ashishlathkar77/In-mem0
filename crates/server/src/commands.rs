@@ -406,15 +406,22 @@ fn client_cmd(argv: &[&[u8]], st: &mut ConnState) -> Outcome {
 }
 
 fn info_text(store: &Store, cfg: &Config) -> String {
+    let s = store.stats();
     format!(
         "# Server\r\nredis_version:7.4.0-inmem-0.0.1\r\ninmem_version:0.0.1\r\nmode:standalone\r\n\
          # Clients\r\nconnected_clients:1\r\n\
-         # Memory\r\nmaxmemory:{}\r\nmaxmemory_policy:allkeys-lfu\r\n\
+         # Memory\r\nused_memory:{}\r\nmaxmemory:{}\r\nmaxmemory_policy:s3-fifo\r\n\
          # Keyspace\r\ndb0:keys={},expires=0,avg_ttl=0\r\n\
          # Replication\r\nrole:master\r\n\
-         # Stats\r\nshards:{}\r\n",
+         # Stats\r\ntotal_commands_processed:{}\r\nkeyspace_hits:{}\r\nkeyspace_misses:{}\r\n\
+         evicted_keys:{}\r\nshards:{}\r\n",
+        s.used_memory,
         cfg.maxmemory,
         store.dbsize(),
+        store.commands_processed(),
+        s.hits,
+        s.misses,
+        s.evicted,
         store.shard_count(),
     )
 }
