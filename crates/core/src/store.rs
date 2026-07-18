@@ -349,10 +349,15 @@ impl Store {
         }
     }
 
-    /// Record that one command was processed (called by the server per command).
+    /// Record that `n` commands were processed. Callers batch this per network read (a pipelined
+    /// read holds many commands) rather than calling once per command: a single global counter
+    /// bumped per command would ping-pong its cache line across connection threads and throttle
+    /// throughput at high pipeline depth. One relaxed add per read keeps it off the hot path.
     #[inline]
-    pub fn note_command(&self) {
-        self.commands.fetch_add(1, Ordering::Relaxed);
+    pub fn add_commands(&self, n: u64) {
+        if n != 0 {
+            self.commands.fetch_add(n, Ordering::Relaxed);
+        }
     }
 
     /// Total commands processed since startup.
