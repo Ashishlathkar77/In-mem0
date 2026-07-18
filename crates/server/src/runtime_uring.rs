@@ -89,6 +89,7 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
 
         let mut cursor = 0;
         let mut quit = false;
+        let mut batch_cmds: u64 = 0; // commands served this read; flushed once per read batch
         loop {
             let consumed = match parse_command_ranges(&inbuf[cursor..], &mut ranges) {
                 Ok(Some(c)) => c,
@@ -137,6 +138,7 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
 
             // Zero-copy fast path (borrowed GET, alloc-free SET/INCR) shared with the portable
             // server; fall back to the full dispatcher for everything else.
+            batch_cmds += 1;
             let is_write = match crate::conn::serve_fast(&server, &st, &argv, &mut outbuf) {
                 Some(w) => w,
                 None => {
@@ -165,6 +167,7 @@ async fn handle_conn(server: Arc<Server>, mut stream: TcpStream, id: u64) -> std
                 break;
             }
         }
+        server.store.add_commands(batch_cmds); // one atomic add per read batch, not per command
 
         if cursor > 0 {
             inbuf.drain(0..cursor);

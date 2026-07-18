@@ -76,6 +76,7 @@ fn run<S: Read + Write>(
 
         let mut cursor = 0;
         let mut quit = false;
+        let mut batch_cmds: u64 = 0; // commands served this read; flushed once (see below)
         loop {
             let consumed = match parse_command_ranges(&inbuf[cursor..], &mut ranges) {
                 Ok(Some(c)) => c,
@@ -135,6 +136,7 @@ fn run<S: Read + Write>(
                 continue;
             }
 
+            batch_cmds += 1;
             let handled = serve_fast(server, &st, &argv, &mut outbuf);
             let is_write = match handled {
                 Some(w) => w,
@@ -168,6 +170,9 @@ fn run<S: Read + Write>(
                 break;
             }
         }
+        // One atomic add per read batch (not per command) keeps the command counter off the
+        // contended hot path — see Store::add_commands.
+        server.store.add_commands(batch_cmds);
 
         if cursor > 0 {
             inbuf.drain(0..cursor);

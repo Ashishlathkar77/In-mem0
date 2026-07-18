@@ -16,4 +16,4 @@ pub mod store;
 
 pub use map::FlatMap;
 pub use s3fifo::S3Fifo;
-pub use store::{fmt_score, now_ms, SetOptions, Store, StrRead, Ttl, Value, WRONGTYPE};
+pub use store::{fmt_score, now_ms, SetOptions, Store, StoreStats, StrRead, Ttl, Value, WRONGTYPE};
